@@ -1,0 +1,166 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Sim Replay Viewer</title>
+<!--
+  sim/viewer.html — replay player for sim/run.ts (--replays N) replays.
+  Single file, zero dependencies. Open in a browser, drop or pick a replay .json
+  (from sim/replays/), then play / scrub / click a mech to follow it.
+-->
+<body style="margin:0;background:#101216;color:#cfd6e0;font:14px system-ui,sans-serif;overflow:hidden">
+<canvas id="cv" style="display:block"></canvas>
+<div id="bar" style="position:fixed;left:0;right:0;bottom:0;display:flex;gap:10px;align-items:center;padding:8px 12px;background:#161a20e8">
+  <button id="play" style="min-width:52px">▶</button>
+  <span id="time" style="width:110px;font-variant-numeric:tabular-nums">0.0 / 0s</span>
+  <input id="scrub" type="range" min="0" max="1000" value="0" style="flex:1">
+  <button id="slow">0.5×</button>
+  <button id="spd">1×</button>
+  <button id="fast">2×</button>
+  <button id="vfast">10×</button>
+  <input id="file" type="file" accept=".json" style="width:150px">
+  <span id="focus" style="min-width:120px;color:#7bd88f">focus: me-0</span>
+</div>
+<div id="drop" style="position:fixed;inset:0;display:grid;place-content:center;background:#101216cc;font-size:18px">
+  <div>Drop a replay .json here (sim/replays/m-*.json)</div>
+  <div style="opacity:.6;font-size:13px;margin-top:8px">or pick it below ↓</div>
+</div>
+<script>
+"use strict"
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d")
+const drop = document.getElementById("drop"), fileEl = document.getElementById("file")
+const playBtn = document.getElementById("play"), scrub = document.getElementById("scrub")
+const timeEl = document.getElementById("time"), focusEl = document.getElementById("focus")
+let data = null, frames = [], prisms = [], fi = 0, playing = false, speed = 1, focusId = 0, follow = false
+let scale = 1, camX = 0, camY = 0
+const COLORS = { focus: "#7bd88f", house: "#d88f4b", npc: "#8a93a0", zone: "#4aa3d8", next: "#4aa3d855", beam: "#e0e6f0" }
+
+function resize() {
+  cv.width = innerWidth; cv.height = innerHeight - 54
+  cv.style.height = cv.height + "px"
+}
+addEventListener("resize", resize); resize()
+
+function loadRep(d) {
+  data = d; frames = d.frames; prisms = d.world?.prisms ?? []
+  fi = 0; playing = true; drop.style.display = "none"
+  const f0 = frames[0]
+  camX = f0.zone.x; camY = f0.zone.y
+  scale = Math.min(cv.width, cv.height) / (f0.zone.r * 2.3)
+}
+fileEl.onchange = () => { const f = fileEl.files[0]; if (f) f.text().then((t) => loadRep(JSON.parse(t))) }
+addEventListener("dragover", (e) => e.preventDefault())
+addEventListener("drop", (e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) f.text().then((t) => loadRep(JSON.parse(t))) })
+
+function w2s(x, y) { return [(x - camX) * scale + cv.width / 2, (y - camY) * scale + cv.height / 2] }
+
+cv.onmousedown = (e) => {
+  if (!frames.length) return
+  const f = frames[fi]
+  let best = null, bd = 160
+  for (const m of f.mechs) {
+    if (!m.alive) continue
+    const [sx, sy] = w2s(m.x, m.y)
+    const d = Math.hypot(sx - e.offsetX, sy - e.offsetY)
+    if (d < bd) { bd = d; best = m }
+  }
+  if (best) { focusId = best.id; follow = false }
+  focusEl.textContent = `focus: ${focusId === 0 ? "test bot" : "house-" + focusId}`
+}
+
+function draw() {
+  ctx.fillStyle = "#101216"; ctx.fillRect(0, 0, cv.width, cv.height)
+  if (!frames.length) { requestAnimationFrame(draw); return }
+  const f = frames[fi]
+  if (follow) { const me = f.mechs[focusId]; if (me && me.alive) { camX = me.x; camY = me.y } }
+  // prisms (buildings/bridges)
+  for (const p of prisms) {
+    ctx.beginPath()
+    for (let i = 0; i < p.r.length; i += 2) {
+      const [sx, sy] = w2s(p.r[i], p.r[i + 1])
+      i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy)
+    }
+    ctx.closePath()
+    const height = p.t - p.b
+    ctx.fillStyle = height > 4 ? "#232a34" : height > 1.5 ? "#1c222b" : "#171c23"
+    ctx.fill()
+    if (height > 4) { ctx.strokeStyle = "#2e3745"; ctx.lineWidth = 1; ctx.stroke() }
+  }
+  // zone: outer death wall (where you take dps) = current r; soft inner = r * (next visible in replay? draw danger band)
+  const [zx, zy] = w2s(f.zone.x, f.zone.y)
+  ctx.beginPath(); ctx.arc(zx, zy, f.zone.r * scale, 0, Math.PI * 2)
+  ctx.strokeStyle = COLORS.zone; ctx.lineWidth = 2; ctx.stroke()
+  ctx.beginPath(); ctx.arc(zx, zy, f.zone.r * scale, 0, Math.PI * 2)
+  ctx.fillStyle = "#4aa3d80a"; ctx.fill()
+  // shots / beams
+  for (const s of f.shots) {
+    const col = s.kind === "laser" ? "#f0574a" : s.kind === "lightning" ? "#7ab8ff" : COLORS.beam
+    const [ax, ay] = w2s(s.a[0], s.a[1]), [bx, by] = w2s(s.b[0], s.b[1])
+    ctx.strokeStyle = col; ctx.lineWidth = s.kind === "gun" ? 1 : 2.5; ctx.globalAlpha = .9
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); ctx.globalAlpha = 1
+  }
+  // npcs
+  for (const n of f.npcs) {
+    const [sx, sy] = w2s(n.x, n.y)
+    ctx.fillStyle = COLORS.npc
+    ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill()
+  }
+  // deaths this frame: red cross
+  for (const id of f.deaths) {
+    const src = frames[Math.max(0, fi - 1)]
+    const m = (id === 0 ? src.mechs[0] : src.mechs.find((x) => x.id === id)) ?? src.mechs[id]
+    if (!m) continue
+    const [sx, sy] = w2s(m.x, m.y)
+    ctx.strokeStyle = "#f0574a"; ctx.lineWidth = 2
+    ctx.beginPath(); ctx.moveTo(sx - 7, sy - 7); ctx.lineTo(sx + 7, sy + 7); ctx.moveTo(sx + 7, sy - 7); ctx.lineTo(sx - 7, sy + 7); ctx.stroke()
+  }
+  // mechs
+  for (const m of f.mechs) {
+    if (!m.alive) continue
+    const [sx, sy] = w2s(m.x, m.y)
+    const rr = Math.max(4, 2.5 * scale + m.cubes * 0.12 * scale)
+    const focus = m.id === focusId
+    ctx.fillStyle = focus ? COLORS.focus : m.id === 0 ? "#5fbf73" : COLORS.house
+    if (focus) { ctx.strokeStyle = "#c7f0cf"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx, sy, rr + 3, 0, Math.PI * 2); ctx.stroke() }
+    ctx.beginPath(); ctx.arc(sx, sy, rr, 0, Math.PI * 2); ctx.fill()
+    // aim line
+    ctx.strokeStyle = focus ? "#c7f0cf" : "#d88f4b88"
+    ctx.lineWidth = 1
+    ctx.beginPath(); ctx.moveTo(sx, sy)
+    ctx.lineTo(sx + Math.cos(m.yaw) * 16, sy + Math.sin(m.yaw) * 16); ctx.stroke()
+    // hp bar
+    const w = rr * 3.4
+    ctx.fillStyle = "#161a20"; ctx.fillRect(sx - w / 2, sy - rr - 8, w, 3)
+    ctx.fillStyle = m.hp > 700 ? "#78d98a" : m.hp > 350 ? "#e0b34d" : "#e0604d"
+    ctx.fillRect(sx - w / 2, sy - rr - 8, w * Math.min(1, m.hp / 1400), 3)
+    if (focus) { ctx.fillStyle = "#c7f0cf"; ctx.font = "11px system-ui"; ctx.fillText(`#${m.id} ${Math.round(m.hp)}hp`, sx + rr, sy - rr - 12) }
+  }
+  timeEl.textContent = `${f.t.toFixed(1)} / ${(frames[frames.length - 1].t).toFixed(0)}s`
+  scrub.value = String((fi / (frames.length - 1)) * 1000)
+  requestAnimationFrame(draw)
+}
+requestAnimationFrame(draw)
+
+playBtn.onclick = () => { playing = !playing; playBtn.textContent = playing ? "⏸" : "▶" }
+scrub.oninput = () => { fi = Math.round((scrub.value / 1000) * (frames.length - 1)); playing = false; playBtn.textContent = "▶" }
+addEventListener("keydown", (e) => {
+  if (e.code === "Space") { e.preventDefault(); playBtn.onclick() }
+  if (e.code === "ArrowLeft") fi = Math.max(0, fi - 20)
+  if (e.code === "ArrowRight") fi = Math.min(frames.length - 1, fi + 20)
+  if (e.key === "f") { follow = !follow }
+})
+const speeds = [0.5, 1, 2, 10]
+document.getElementById("slow").onclick = () => { speed = 0.5 }
+document.getElementById("spd").onclick = () => { speed = 1 }
+document.getElementById("fast").onclick = () => { speed = 2 }
+document.getElementById("vfast").onclick = () => { speed = 10 }
+let last = 0
+function tick(t) {
+  const dt = (t - last) / 1000; last = t
+  if (playing && frames.length) {
+    const adv = dt * speed * 20 / 5 // real-time: 20 ticks/s, frames every 5 ticks
+    fi = Math.min(frames.length - 1, fi + adv)
+    if (fi >= frames.length - 1) { playing = false; playBtn.textContent = "▶" }
+  }
+  requestAnimationFrame(tick)
+}
+requestAnimationFrame(tick)
+</script>

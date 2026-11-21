@@ -1,0 +1,7 @@
+.git
+.superpowers
+.remember
+node_modules
+sim
+*.md
+!README.md

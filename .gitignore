@@ -4,3 +4,4 @@ bun.lock
 *.log
 .superpowers/
 bash.exe.stackdump
+sim/replays/
