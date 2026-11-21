@@ -2,3 +2,5 @@ node_modules/
 bun.lockb
 bun.lock
 *.log
+.superpowers/
+bash.exe.stackdump

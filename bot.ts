@@ -1,28 +1,63 @@
-/** Example bot: walk to the zone, grab a weapon, shoot the nearest mech, draw what it's thinking. */
-import { type Action, draw, type Observation, run } from "./mechfight.ts"
+/** Mech Royale bot v1: wires the map, brain, and a last-resort fallback. Bot behavior lives in brain.ts. */
+import { log, run, type BotAction, type Hello, type Observation } from "./mechfight.ts"
+import { loadMap, los, type GameMap } from "./map.ts"
+import { Brain } from "./brain.ts"
 
-const dist = (a: number[], b: number[]) => Math.hypot(b[0] - a[0], b[1] - a[1])
+/** Load the arena. On a Windows host the conformance harness abspath()es "/arena" to "C:\arena";
+ * map that back to the in-container mount before giving up (Linux hosts pass "/arena" through). */
+function initMap(hello: Hello): GameMap {
+  const stepUp = hello.config.mech.step_up ?? 1.2
+  try {
+    return loadMap(hello.map.dir, stepUp)
+  } catch (e) {
+    const remap = hello.map.dir.replace(/^[A-Za-z]:[\\/]/, "/")
+    if (remap === hello.map.dir) throw e
+    return loadMap(remap, stepUp)
+  }
+}
 
-run((hello) => ({
-  name: "example-ts",
-  act(obs: Observation) {
+run((hello) => {
+  let brain: Brain | null = null
+  try {
+    const map: GameMap = initMap(hello)
+    brain = new Brain(hello, map, (a, b) => los(map, a, b))
+  } catch (e) {
+    // stdout is the protocol — everything we can say goes to stderr
+    log("mech-royale: brain init failed, running fallback:", e)
+  }
+
+  const fallback = (obs: Observation): BotAction => {
+    // spec v1 fallback: move toward zone center, aim nearest visible mech, fire the gun
     const me = obs.self
     const [x, y, z] = me.pos
-    const goal = obs.zone.next_center
-    const yaw = Math.atan2(goal[1] - y, goal[0] - x)
-    const act: Omit<Action, "tick"> = { move: [Math.cos(yaw), Math.sin(yaw)], aim: [yaw, 0], boost: !me.in_zone, jump: obs.tick % 40 === 0 }
-    if (obs.offer) act.pick = 0
-    const near = obs.pickups.find((p) => dist(p.pos, me.pos) < hello.config.loot.pickup_radius && p.kind !== "gun")
-    if (!me.weapons[1] && near) act.take = near.id
-    const enemy = obs.mechs.filter((m) => m.kind === "mech").sort((a, b) => dist(a.pos, me.pos) - dist(b.pos, me.pos))[0]
+    const c = obs.zone.center
+    const yaw = Math.atan2(c[1] - y, c[0] - x)
+    const enemy = obs.mechs
+      .filter((m) => m.kind === "mech")
+      .sort((a, b) => (a.pos[0] - x) ** 2 + (a.pos[1] - y) ** 2 - ((b.pos[0] - x) ** 2 + (b.pos[1] - y) ** 2))[0]
+    let aim: [number, number] = [yaw, 0]
     if (enemy) {
-      const t = enemy.pos
-      act.aim = [Math.atan2(t[1] - y, t[0] - x), Math.atan2(t[2] - z - 2.5, dist(t, me.pos))]
-      act.fire = [true, true]
-      draw.line([x, y, z + 7], [t[0], t[1], t[2] + 4.5], "#ff5040")
+      const d = Math.hypot(enemy.pos[0] - x, enemy.pos[1] - y)
+      aim = [Math.atan2(enemy.pos[1] - y, enemy.pos[0] - x), Math.atan2(enemy.pos[2] + 4.5 - z - 4.5, d)]
     }
-    draw.point([goal[0], goal[1], z], "#40c0ff", 6)
-    draw.label(`hp ${me.hp.toFixed(0)} · ${enemy ? `target ${enemy.id}` : "searching"}`)
-    return act
-  },
-}))
+    return { move: [Math.cos(yaw), Math.sin(yaw)], aim, fire: [enemy != null, false] }
+  }
+
+  return {
+    name: "mech-royale-v1",
+    act(obs: Observation): BotAction {
+      // hard deadline: A* inside brain.act runs only while act is still under 10 ms of wall
+      // time (cap dropped to 10 ms); past that the brain reuses its last path
+      const t0 = performance.now()
+      if (brain) {
+        try {
+          return brain.act(obs, { elapsedMs: () => performance.now() - t0 })
+        } catch (e) {
+          log(`brain.act failed at tick ${obs.tick}:`, e)
+          brain = null // don't rethrow every tick: fall back permanently
+        }
+      }
+      return fallback(obs)
+    },
+  }
+})
