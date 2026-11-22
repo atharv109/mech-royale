@@ -38,6 +38,8 @@ export type BrainDeps = {
   /** contract: new StuckMonitor(now) */
   stuck?: (now: number) => StuckLike
   decide?: DecideFn
+  /** shared counters (bot.ts owns the BOTSIG emission) */
+  stats?: BrainStats
 }
 
 const LOOT_WINDOW_S = 150
@@ -139,6 +141,28 @@ function mulberry32(seed: number): () => number {
 
 const dist2d = (a: Vec3 | Vec2, b: Vec3 | Vec2) => Math.hypot(a[0] - b[0], a[1] - b[1])
 
+export type BrainStats = {
+  dodges: number
+  retreats: number
+  coverTicks: number
+  seen: Record<string, number>
+  seenDist: Record<string, number>
+  walked: number
+  took: Record<string, number>
+  fail: Record<string, number>
+}
+
+export const newBrainStats = (): BrainStats => ({
+  dodges: 0,
+  retreats: 0,
+  coverTicks: 0,
+  seen: {},
+  seenDist: {},
+  walked: 0,
+  took: {},
+  fail: {},
+})
+
 export class Brain {
   private readonly hello: Hello
   private readonly map: GameMap
@@ -153,6 +177,9 @@ export class Brain {
   private stuck: StuckLike | null = null
   private strafeSign: number
   private strafeFlipAt: number
+  /** Task 10 counters (filled by variant brains; diagnostics by every brain) */
+  readonly stats: BrainStats
+  private pkIds = new Set<number>()
   /** fp/drones: recent damage by a mech (ms-window via obs.tick) */
   private lastMechHitTick = -9999
   private burstUntil = -1
@@ -174,6 +201,7 @@ export class Brain {
       lastDamaged: null,
       disengaging: false,
     }
+    this.stats = deps?.stats ?? newBrainStats()
   }
 
   /** act() deadline context, passed by bot.ts: elapsed wall time and a force-replan switch */
@@ -188,6 +216,19 @@ export class Brain {
     const live = zoneCircle(obs.zone, obs.t)
     const walkSpeed = me.stats.walk_speed || 11.7
     const pickupRadius = this.hello.config.loot.pickup_radius || 4
+
+    // Task 10 diagnostics: pickups seen once by id (with first-sight distance), take results
+    for (const p of obs.pickups) {
+      if (!this.pkIds.has(p.id)) {
+        this.pkIds.add(p.id)
+        this.stats.seen[p.kind] = (this.stats.seen[p.kind] ?? 0) + 1
+        this.stats.seenDist[p.kind] = (this.stats.seenDist[p.kind] ?? 0) + Math.round(dist2d(p.pos, pos2))
+      }
+    }
+    for (const ev of obs.events) {
+      if (ev.type === "take_failed") this.stats.fail[ev.reason] = (this.stats.fail[ev.reason] ?? 0) + 1
+      else if (ev.type === "took") this.stats.took[ev.kind] = (this.stats.took[ev.kind] ?? 0) + 1
+    }
 
     let enemy: ActorObs | null = null
     let enemyDist = Infinity
@@ -204,7 +245,7 @@ export class Brain {
     // fp/drones: in the first 75 s ignore mechs unless one is damaging us — hand decide() a
     // mech-filtered obs so its target/aim/fire go to drones and crates only.
     let pveObs = obs
-    if (obs.t < 75 && obs.tick - this.lastMechHitTick > 50) {
+    if (obs.t < 150 && obs.tick - this.lastMechHitTick > 50) {
       pveObs = { ...obs, mechs: obs.mechs.filter((m) => m.kind !== "mech") } as Observation
     }
     const decision = this.decideFn(pveObs, this.combat, { los: this.los })
@@ -248,7 +289,7 @@ export class Brain {
     }
 
     // b0. fp/drones: walk over every visible cube before PVE/loot (first 75 s, no mech fire on us)
-    if (goal === null && strafeOf === null && obs.t < 75 && obs.tick - this.lastMechHitTick > 50) {
+    if (goal === null && strafeOf === null && obs.t < 150 && obs.tick - this.lastMechHitTick > 50) {
       let cube: Observation["cubes"][number] | null = null
       let cubeDist = Infinity
       for (const c of obs.cubes) {
@@ -265,7 +306,9 @@ export class Brain {
       let dr: Observation["drops"][number] | null = null
       let drD = Infinity
       for (const d of obs.drops) {
-        if (dist2d(d.pos, live.c) > live.r - 5) continue
+        // ec/long: all 3 drops matter whenever they land inside the NEXT circle
+        const nc = obs.zone.next_center
+        if (dist2d(d.pos, [nc[0]!, nc[1]!]) > obs.zone.next_radius - 5) continue
         const dd = dist2d(d.pos, pos2) + (d.lands_in > 0 ? 30 : 0)
         if (dd < drD) { drD = dd; dr = d }
       }
@@ -283,7 +326,7 @@ export class Brain {
     // b. fight — decide() owns aim/fire; strafe the mech it targets (else the nearest) within 200 m.
     // fp/drones: in the first 75 s mechs are ignored unless they damage us.
     if (goal === null) {
-      const pveWindow = obs.t < 75 && obs.tick - this.lastMechHitTick > 50
+      const pveWindow = obs.t < 150 && obs.tick - this.lastMechHitTick > 50
       if (targetMech && dist2d(targetMech.pos, pos2) <= 200 && !pveWindow) strafeOf = targetMech
       else if (enemy && enemyDist <= 200 && !pveWindow) strafeOf = enemy
     }
@@ -298,7 +341,7 @@ export class Brain {
     }
 
     // d0. fp/drones: first 75 s — chase the nearest npc/crate within 150 m unless being shot by a mech
-    if (goal === null && obs.t < 75 && obs.tick - this.lastMechHitTick > 50) {
+    if (goal === null && obs.t < 150 && obs.tick - this.lastMechHitTick > 50) {
       let pv: { pos: Vec3; d: number } | null = null
       let pvd = Infinity
       for (const m of obs.mechs) {
@@ -317,6 +360,7 @@ export class Brain {
     if (goal === null && strafeOf === null && obs.t < LOOT_WINDOW_S) {
       const want = this.preferredPickup(obs.pickups, me.weapons, pos2, PICKUP_MAX_DIST)
       if (want && dist2d(want.pos, pos2) > pickupRadius) goal = [want.pos[0], want.pos[1]]
+      if (goal !== null) this.stats.walked++
     }
 
     // d. crates/NPCs — loot window, no mech visible: approach decide's crate/NPC target within 60 m
