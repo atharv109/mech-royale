@@ -48,9 +48,11 @@ run((hello) => {
     ? brain.stats
     : { dodges: 0, retreats: 0, coverTicks: 0, seen: {}, seenDist: {}, walked: 0, took: {}, fail: {} }
   let maxActMs = 0
+  let slowTicks = 0
+  const slowSnap: unknown[] = []
   process.on("exit", () => {
     try {
-      console.error("BOTSIG " + JSON.stringify({ ...stats, maxActMs: Math.round(maxActMs * 100) / 100 }))
+      console.error("BOTSIG " + JSON.stringify({ ...stats, maxActMs: Math.round(maxActMs * 100) / 100, slowTicks, slowSnap, parts: (brain as { parts?: unknown } | null)?.parts ?? null }))
     } catch {}
   })
 
@@ -63,6 +65,11 @@ run((hello) => {
       const done = (r: BotAction): BotAction => {
         const ms = performance.now() - t0
         if (ms > maxActMs) maxActMs = ms
+        if (ms > 20) {
+          slowTicks++
+          if (slowSnap.length < 4)
+            slowSnap.push({ tick: obs.tick, ms: Math.round(ms * 10) / 10, parts: (brain as { parts?: unknown } | null)?.parts ?? null })
+        }
         return r
       }
       if (brain) {

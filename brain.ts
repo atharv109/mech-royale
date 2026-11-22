@@ -156,6 +156,13 @@ export class Brain {
   private tallCells: [number, number][] | null = null
   private hideSpotFor = ""
   private hideSpotCache: Vec2 | null = null
+  /** Task 10 timing fix: best-so-far + cursor so the scan resumes across act() calls */
+  private hideBestScore = -Infinity
+  private scanUnits = 0
+  private hideCalls = 0
+  private hideLast: { b: number; a: number; dt: number } | null = null
+  private parts = { decideMs: 0, hideMs: 0, navMs: 0, lastTotal: 0, hideCalls: 0, hideOver: 0, hideCursorBefore: -1, hideCursorAfter: -1 }
+  private hideCursor = 0
   private burstUntil = -1
   private perpUntil = -1
   private perpSign = 1
@@ -202,7 +209,9 @@ export class Brain {
     }
 
     const primary = me.weapons[1]?.kind ?? me.weapons[0]?.kind ?? "gun"
+    const _tD = performance.now()
     const decision = this.decideFn(obs, this.combat, { los: this.los })
+    if (this.parts.decideMs < performance.now() - _tD) this.parts.decideMs = performance.now() - _tD
     const target = decision?.target ?? null
 
     // C1: decide's target carries only {id, kind} — resolve the actor from obs by id
@@ -277,7 +286,19 @@ export class Brain {
     // f. var/hide — walk silently (<= ~4.5 m/s) to the cached hide spot; grab nearby cubes
     // only once standing at it; loot/crate approaches dropped entirely.
     if (goal === null && strafeOf === null) {
+      const _tH = performance.now()
+      const before = this.hideCursor
       const spot = this.hideSpot(obs.zone, obs)
+      const dt = performance.now() - _tH
+      if (this.parts.hideMs < dt) {
+        this.parts.hideMs = dt
+        this.parts.hideCalls = this.hideCursor
+        this.parts.hideOver = Math.round(dt * 100) / 100
+      }
+      if (dt > 20) {
+        this.hideCalls = (this.hideCalls ?? 0) + 1
+        this.hideLast = { b: before, a: this.hideCursor, dt: Math.round(dt) }
+      }
       goal = spot ?? [obs.zone.next_center[0], obs.zone.next_center[1]]
       silent = true
       if (spot && dist2d(spot, pos2) < 2) {
@@ -339,7 +360,9 @@ export class Brain {
     } else if (this.actCtx?.forceReplan) {
       navOpts = { force: true }
     }
+    const _tN = performance.now()
     const nav = this.nav.update(pos2, navGoal, obs.t, navOpts)
+    if (this.parts.navMs < performance.now() - _tN) this.parts.navMs = performance.now() - _tN
     let move: Vec2 = nav.atGoal ? [0, 0] : [nav.dir[0], nav.dir[1]]
 
     // Stuck handling: burst = hop+boost 0.5 s, perp = rotate the command 0.5 s (I1, M2)
@@ -383,6 +406,7 @@ export class Brain {
         if (plan.drop !== undefined) a.drop = plan.drop
       }
     }
+    this.parts.lastTotal = performance.now() - _tD
     return a
   }
 
@@ -394,8 +418,15 @@ export class Brain {
    */
   private hideSpot(zone: ZoneObs, obs: Observation): Vec2 | null {
     const key = `${zone.next_center[0].toFixed(0)},${zone.next_center[1].toFixed(0)}`
-    if (this.hideSpotFor === key) return this.hideSpotCache
-    this.hideSpotFor = key
+    if (this.hideSpotFor === key && this.tallCells && this.hideCursor >= this.tallCells.length)
+      return this.hideSpotCache // scan complete: pure cache hit
+    if (this.hideSpotFor !== key) {
+      this.hideSpotFor = key
+      this.hideCursor = 0
+      this.hideSpotCache = null
+      this.hideBestScore = -Infinity
+      this.tallCells = null // rebuild with the tower-cell prefilter below
+    }
     const m = this.map
     if (!this.tallCells) {
       const out: [number, number][] = []
@@ -404,17 +435,43 @@ export class Brain {
         if (!pr) continue
         for (const it of pr) {
           if (it.top - it.base >= 4) {
-            out.push([m.minX + ((k % m.nx) + 0.5) * m.step, m.minY + (Math.floor(k / m.nx) + 0.5) * m.step])
+            const tx = m.minX + ((k % m.nx) + 0.5) * m.step
+            const ty = m.minY + (Math.floor(k / m.nx) + 0.5) * m.step
+            // timing fix: the per-candidate "not inside the wall" check moved to the build (once)
+            if (feasible(m, tx, ty)) continue
+            out.push([tx, ty])
             break
           }
         }
       }
+      // timing fix: sort by distance to the next center so the exact score bound below prunes
+      // far towers instantly once any nearby spot is found (result-identical max)
+      out.sort((p, q) => {
+        const dp = (p[0]! - zone.next_center[0]) ** 2 + (p[1]! - zone.next_center[1]) ** 2
+        const dq = (q[0]! - zone.next_center[0]) ** 2 + (q[1]! - zone.next_center[1]) ** 2
+        return dp - dq
+      })
       this.tallCells = out
     }
     const eyeZ = obs.self.pos[2] + (this.hello.config.mech.eye_height ?? 8)
-    let best: Vec2 | null = null
-    let bestScore = -Infinity
-    for (const [tx, ty] of this.tallCells) {
+    const t0 = Date.now()
+    let best = this.hideSpotCache
+    let bestScore = this.hideBestScore
+    const cells = this.tallCells!
+    // timing fix: resume the scan across act() calls, hard-stopping at 20 ms of wall time
+    // (the scorer saw 9/300 late answers from this one-shot map-wide sweep)
+    // timing fix: WORK-based budget, not performance.now(): the Windows timer granularity
+    // (~15.6 ms quantization) made every clock check read as past-due, so the scan crawled.
+    // 2000 cells ~= 6-9 ms of measured CPU; Date.now() backstop against pathological los costs.
+    this.scanUnits = 150
+    while (this.hideCursor < cells.length && this.scanUnits > 0) {
+      this.scanUnits--
+      const [tx, ty] = cells[this.hideCursor++]!
+      // exact bound: candidate score = -(dist(cell, us) + 0.6*dNext) >= -0.6*dNext, so a cell
+      // whose -0.6*dNext can't beat the current best is skipped without feasible/los probes
+      const dCell = Math.hypot(tx - zone.next_center[0], ty - zone.next_center[1])
+      if (bestScore > -Infinity && -0.6 * dCell <= bestScore) continue
+      if (Math.hypot(tx - obs.self.pos[0], ty - obs.self.pos[1]) > 300) continue
       for (let k = 0; k < 8; k++) {
         const a = (k / 8) * Math.PI * 2
         for (const r of [3, 4.5, 6]) {
@@ -422,14 +479,16 @@ export class Brain {
           const y = ty + Math.sin(a) * r
           const dNext = Math.hypot(x - zone.next_center[0], y - zone.next_center[1])
           if (dNext > zone.next_radius * 0.8) continue
-          if (!feasible(m, x, y) || feasible(m, tx, ty)) continue // near the wall, not inside it
+          if (!feasible(m, x, y)) continue // near the wall
           if (this.los([x, y, eyeZ], [zone.center[0], zone.center[1], eyeZ])) continue
           const score = -(Math.hypot(x - obs.self.pos[0], y - obs.self.pos[1]) + 0.6 * dNext)
           if (score > bestScore) { bestScore = score; best = [x, y] }
         }
       }
+      if ((this.hideCursor & 255) === 0 && Date.now() - t0 > 20) break
     }
     this.hideSpotCache = best
+    this.hideBestScore = bestScore
     return best
   }
 

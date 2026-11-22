@@ -197,6 +197,8 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
     botDodges: typeof bsig?.dodges === "number" ? bsig.dodges : 0,
     botRetreats: typeof bsig?.retreats === "number" ? bsig.retreats : 0,
     botMaxActMs: typeof bsig?.maxActMs === "number" ? Math.round(bsig.maxActMs * 100) / 100 : 0,
+    botSlowTicks: typeof bsig?.slowTicks === "number" ? bsig.slowTicks : 0,
+    botParts: bsig?.slowSnap ?? null,
     botSeen: bsig?.seen ?? {},
     botSeenDist: bsig?.seenDist ?? {},
     botFail: bsig?.fail ?? {},
