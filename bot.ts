@@ -44,6 +44,8 @@ class Brain {
   npcMem = new Map<number, { pos: number[]; vel: number[]; t: number; hp: number }>()
   cubeMem = new Map<number, { pos: number[]; t: number }>()
   pickMem = new Map<number, { pos: number[]; kind: string; t: number }>()
+  /** x/r1 killcubes: where the last observed kill dropped its cubes */
+  killLoot: { pos: number[]; t: number } | null = null
 
   constructor(hello: Hello) {
     this.cfg = hello.config
@@ -112,7 +114,12 @@ class Brain {
         this.threatBearing = e.bearing
         this.threatT = t
       }
-      if (e.type === "kill") this.tracks.delete(e.target)
+      if (e.type === "kill") {
+        // x/r1 killcubes: remember where the victim died so its dropped cubes get collected
+        const tr = this.tracks.get(e.target)
+        if (tr) this.killLoot = { pos: [tr.pos[0], tr.pos[1]], t }
+        this.tracks.delete(e.target)
+      }
     }
     for (const s of o.sounds) {
       if (["gun", "laser", "laser_charge", "lightning", "mortar", "boost", "step", "jet"].includes(s.kind) && s.dist !== "far") {
@@ -429,6 +436,18 @@ class Brain {
       } else if (mode !== "fight") {
         // loot: pickups worth taking, then crates/cubes, then NPCs
         let best: [number, number] | null = null, bs = 1e9
+        // x/r1 killcubes: a recent kill dropped its cubes - walk onto the kill spot before
+        // anything else; the enclosing branch only runs with no zone goal, so the zone can
+        // never force us out of position for it
+        if (this.killLoot && t - this.killLoot.t < 10) {
+          const kl = this.killLoot
+          const d = hyp2(x, y, kl.pos[0], kl.pos[1])
+          const zr = hyp2(kl.pos[0], kl.pos[1], zn.next_center[0], zn.next_center[1])
+          if (d < 200 && zr <= zn.next_radius * 0.95) {
+            best = [kl.pos[0], kl.pos[1]]
+            bs = -1e6
+          }
+        }
         for (const p of this.pickMem.values()) {
           if (wantKind(p.kind) === null) continue
           const d = hyp2(x, y, p.pos[0], p.pos[1])
