@@ -301,7 +301,7 @@ export class Brain {
         const d = dist2d(c.pos, pos2)
         if (d < pvd) { pvd = d; pv = { pos: c.pos, d } }
       }
-      if (pv && pvd <= 150) goal = dist2d(pv.pos, pos2) > 12 ? [pv.pos[0], pv.pos[1]] : pos2
+      if (pv && pvd <= 150) goal = [pv.pos[0], pv.pos[1]]
     }
 
     // d. loot — walk to the best takeable weapon pickup within 80 m
