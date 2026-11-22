@@ -145,6 +145,8 @@ export type BrainStats = {
   dodges: number
   retreats: number
   coverTicks: number
+  /** ag: hunts started per match */
+  hunts: number
   seen: Record<string, number>
   seenDist: Record<string, number>
   walked: number
@@ -156,6 +158,7 @@ export const newBrainStats = (): BrainStats => ({
   dodges: 0,
   retreats: 0,
   coverTicks: 0,
+  hunts: 0,
   seen: {},
   seenDist: {},
   walked: 0,
@@ -180,6 +183,8 @@ export class Brain {
   /** Task 10 counters (filled by variant brains; diagnostics by every brain) */
   readonly stats: BrainStats
   private pkIds = new Set<number>()
+  private killLoot: { pos: Vec3; t: number } | null = null
+  private lastHuntPos: Vec3 | null = null
   /** fp/drones: recent damage by a mech (ms-window via obs.tick) */
   private lastMechHitTick = -9999
   private burstUntil = -1
@@ -227,6 +232,8 @@ export class Brain {
     }
     for (const ev of obs.events) {
       if (ev.type === "take_failed") this.stats.fail[ev.reason] = (this.stats.fail[ev.reason] ?? 0) + 1
+      else if (ev.type === "kill" && this.lastHuntPos)
+        this.killLoot = { pos: [...this.lastHuntPos] as Vec3, t: obs.t }
       else if (ev.type === "took") this.stats.took[ev.kind] = (this.stats.took[ev.kind] ?? 0) + 1
     }
 
@@ -263,6 +270,7 @@ export class Brain {
 
     // C1: decide's target carries only {id, kind} — resolve the actor from obs by id
     const targetMech = target?.kind === "mech" ? (obs.mechs.find((m) => m.id === target.id) ?? null) : null
+    if (decision?.target && targetMech) this.lastHuntPos = [...targetMech.pos] as Vec3
 
     const a: Omit<Action, "tick"> = {}
     if (obs.offer) a.pick = pickUpgrade(obs.offer.choices)
@@ -318,6 +326,36 @@ export class Brain {
         } else {
           goal = [dr.pos[0], dr.pos[1]]
         }
+      }
+    }
+
+    // a3. ec/finish — a visible mech below 30% HP: switch to it and chase it (inside the zone);
+    // decide already prefers the lowest-hp target, the chase overrides our movement ladder
+    if (goal === null) {
+      let hunted: ActorObs | null = null
+      let huntedD = Infinity
+      for (const m of obs.mechs) {
+        if (m.kind !== "mech" || m.hp === undefined || m.max_hp === undefined) continue
+        if (m.hp === 0 || m.hp > 0.3 * m.max_hp) continue
+        if (Math.hypot(m.pos[0] - live.c[0], m.pos[1] - live.c[1]) > Math.max(1, live.r - 5)) continue
+        const d = dist2d(m.pos, pos2)
+        if (d < huntedD) {
+          hunted = m
+          huntedD = d
+        }
+      }
+      if (hunted) {
+        goal = [hunted.pos[0], hunted.pos[1]]
+        strafeOf = hunted
+      }
+    }
+
+    // a4. ec/finish — after a kill, the victim dropped its cubes: walk onto the kill spot first
+    if (goal === null && this.killLoot && obs.t - this.killLoot.t < 10) {
+      const dk = dist2d(this.killLoot.pos, pos2)
+      if (dk < 80) {
+        goal = [this.killLoot.pos[0], this.killLoot.pos[1]]
+        if (dk > 50 && me.energy > 40) boost = true
       }
     }
 

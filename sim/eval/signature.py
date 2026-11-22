@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""sim/eval/signature.py - Task 11 economy signatures from ROW lines."""
+"""sim/eval/signature.py - Task 12 aggression signatures from ROW lines."""
 import json, sys
 
 
@@ -22,12 +22,11 @@ def report(paths):
     dths = sorted(r["deathT"] for r in rows if r.get("deathT") is not None)
     med = dths[len(dths) // 2] if dths else -1
     surv = sum(1 for r in rows if r.get("survived"))
-    print(f"n={n} kills={avg('kills'):.1f} drops={avg('sigDrops'):.1f} "
-          f"cubes@90={avg('sigCubesAt90'):.1f} cubes@150={avg('sigCubesAt150'):.1f} "
+    print(f"n={n} kills={avg('kills'):.1f} cubes@90={avg('sigCubesAt90'):.1f} "
+          f"cubes@150={avg('sigCubesAt150'):.1f} hunts={avg('hunts'):.1f} "
           f"maxAct={max(r.get('botMaxActMs', 0) for r in rows):.1f}ms")
-    print(f"   drones={avg('sigDrones'):.1f} crates={avg('sigCrates'):.1f} "
-          f"specials@90={avg('sigSpecialsAt90'):.1f} "
-          f"medianDeath={med}s surv={surv}")
+    print(f"   drops={avg('sigDrops'):.1f} drones={avg('sigDrones'):.1f} crates={avg('sigCrates'):.1f} "
+          f"upperMedianDeath={med}s surv={surv}")
 
 
 if __name__ == "__main__":
