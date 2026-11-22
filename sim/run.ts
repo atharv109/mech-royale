@@ -206,6 +206,7 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
     botWalked: typeof bsig?.walked === "number" ? bsig.walked : 0,
     botDiag: (bsig && typeof bsig === "object") ? (bsig as Record<string, unknown>) : null,
     botCoverTicks: typeof bsig?.coverTicks === "number" ? Math.round(bsig.coverTicks) : 0,
+    botHunts: typeof bsig?.hunts === "number" ? bsig.hunts : 0,
     winnerName: winner,
   }
 }

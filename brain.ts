@@ -183,6 +183,13 @@ export class Brain {
   /** Task 10 counters (filled by variant brains; diagnostics by every brain) */
   readonly stats: BrainStats
   private pkIds = new Set<number>()
+  /** ag/push: last position where each mech was seen or heard, by obs.t */
+  private tracked = new Map<number, { pos: Vec3; t: number }>()
+  private projIds = new Set<number>()
+  /** heard sources have no shooter id (gun projectiles) -- give them negative keys */
+  private anonKey = -1
+  private huntMemoId = -2
+  private huntMemoT = -9999
   private killLoot: { pos: Vec3; t: number } | null = null
   private lastHuntPos: Vec3 | null = null
   /** fp/drones: recent damage by a mech (ms-window via obs.tick) */
@@ -265,6 +272,25 @@ export class Brain {
           this.lastMechHitTick = obs.tick
           break
         }
+      }
+    }
+
+    // ag/push: track every mech we SEE, plus every mech we HEAR -- a beam origin (exact)
+    // or a gun projectile's first sighting (muzzle ~ shooter pos); entries expire after 10 s
+    for (const m of obs.mechs) {
+      if (m.kind !== "mech") continue
+      this.tracked.set(m.id, { pos: [...m.pos] as Vec3, t: obs.t })
+    }
+    for (const b of obs.beams) {
+      if (b.by === me.id || b.by < 0 || b.by > 15) continue
+      this.tracked.set(b.by, { pos: [...b.path[0]!] as Vec3, t: obs.t })
+    }
+    for (const p of obs.projectiles) {
+      if (p.kind !== "gun") continue
+      if (!this.projIds.has(p.id)) {
+        this.projIds.add(p.id)
+        const key = this.anonKey--
+        this.tracked.set(key, { pos: [...p.pos] as Vec3, t: obs.t })
       }
     }
 
@@ -356,6 +382,32 @@ export class Brain {
       if (dk < 80) {
         goal = [this.killLoot.pos[0], this.killLoot.pos[1]]
         if (dk > 50 && me.energy > 40) boost = true
+      }
+    }
+
+    // a5. ag/push -- holding enough cubes and healthy: hunt the nearest mech seen or heard
+    // in the last 10 s and inside the next circle (within 250 m) instead of waiting for it
+    if (goal === null && me.hp > 0.7 * me.max_hp && me.cubes >= 3) {
+      let huntp: Vec3 | null = null
+      let huntpD = Infinity
+      let hKey = -2
+      for (const [k, tr] of this.tracked) {
+        if (obs.t - tr.t > 10) continue
+        if (dist2d(tr.pos, obs.zone.next_center) > obs.zone.next_radius - 5) continue
+        const d = dist2d(tr.pos, pos2)
+        if (d > 250) continue
+        if (d < huntpD) {
+          huntp = tr.pos
+          huntpD = d
+          hKey = k
+        }
+      }
+      if (huntp) {
+        goal = [huntp[0], huntp[1]]
+        if (huntpD > 60 && me.energy > 40) boost = true
+        if (hKey !== this.huntMemoId || obs.t - this.huntMemoT > 6) this.stats.hunts++
+        this.huntMemoId = hKey
+        this.huntMemoT = obs.t
       }
     }
 

@@ -23,7 +23,7 @@ def report(paths):
     med = dths[len(dths) // 2] if dths else -1
     surv = sum(1 for r in rows if r.get("survived"))
     print(f"n={n} kills={avg('kills'):.1f} cubes@90={avg('sigCubesAt90'):.1f} "
-          f"cubes@150={avg('sigCubesAt150'):.1f} hunts={avg('hunts'):.1f} "
+          f"cubes@150={avg('sigCubesAt150'):.1f} hunts={avg('botHunts'):.1f} "
           f"maxAct={max(r.get('botMaxActMs', 0) for r in rows):.1f}ms")
     print(f"   drops={avg('sigDrops'):.1f} drones={avg('sigDrones'):.1f} crates={avg('sigCrates'):.1f} "
           f"upperMedianDeath={med}s surv={surv}")
