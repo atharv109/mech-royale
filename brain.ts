@@ -152,6 +152,10 @@ export class Brain {
   private stuck: StuckLike | null = null
   private strafeSign: number
   private strafeFlipAt: number
+  /** var/hide: memoized tall-terrain cells and the cached hide spot per next-circle */
+  private tallCells: [number, number][] | null = null
+  private hideSpotFor = ""
+  private hideSpotCache: Vec2 | null = null
   private burstUntil = -1
   private perpUntil = -1
   private perpSign = 1
@@ -228,10 +232,11 @@ export class Brain {
       if (dNext > 0 && tToStart <= dNext / walkSpeed + 10) goal = this.prePositionPoint(pos2, obs.zone)
     }
 
-    // b. fight — decide() owns aim/fire; strafe the mech it targets (else the nearest) within 200 m
-    if (goal === null) {
-      if (targetMech && dist2d(targetMech.pos, pos2) <= 200) strafeOf = targetMech
-      else if (enemy && enemyDist <= 200) strafeOf = enemy
+    // b. fight — var/hide: only respond to whoever is damaging us (last 2 s window)
+    if (goal === null && this.combat.lastDamaged && obs.tick - this.combat.lastDamaged.tObsTick <= 40) {
+      const byId = this.combat.lastDamaged.byId
+      const aggr = byId != null ? obs.mechs.find((m) => m.id === byId && m.kind === "mech") : undefined
+      if (aggr) strafeOf = aggr
     }
     // M5: disengage against the same mech we strafe
     const disengaging = strafeOf !== null && me.hp < 0.3 * me.max_hp && (strafeOf.hp ?? 0) > me.hp
@@ -255,47 +260,46 @@ export class Brain {
       healing = true
     }
 
-    // d. loot — walk to the best takeable weapon pickup within 80 m
-    if (goal === null && strafeOf === null && obs.t < LOOT_WINDOW_S) {
-      const want = this.preferredPickup(obs.pickups, me.weapons, pos2, PICKUP_MAX_DIST)
-      if (want && dist2d(want.pos, pos2) > pickupRadius) goal = [want.pos[0], want.pos[1]]
-    }
-
-    // d. crates/NPCs — loot window, no mech visible: approach decide's crate/NPC target within 60 m
-    if (goal === null && strafeOf === null && enemy === null && obs.t < LOOT_WINDOW_S && target) {
-      const tpos =
-        target.kind === "crate"
-          ? obs.crates.find((c) => c.id === target.id)?.pos
-          : target.kind === "npc"
-            ? obs.mechs.find((m) => m.id === target.id)?.pos
-            : undefined
-      if (tpos && dist2d(tpos, pos2) <= PVE_APPROACH_DIST)
-        goal = dist2d(tpos, pos2) > PVE_STANDOFF ? [tpos[0], tpos[1]] : pos2
-    }
-
-    // d+. cubes — nearest visible cube inside the live zone (never trade zone safety for it)
+    // e2. var/hide: supply drops only when no visible mech within 120 m of us
     if (goal === null && strafeOf === null) {
-      let cube: Observation["cubes"][number] | null = null
-      let cubeDist = Infinity
-      for (const c of obs.cubes) {
-        if (dist2d(c.pos, live.c) > live.r - 5) continue
-        const d = dist2d(c.pos, pos2)
-        if (d < cubeDist) {
-          cube = c
-          cubeDist = d
+      const contested = obs.mechs.some((m) => dist2d(m.pos, pos2) < 120)
+      if (!contested) {
+        for (const dr of obs.drops) {
+          if (dr.lands_in > 0) continue
+          if (dist2d(dr.pos, pos2) > 150) continue
+          if (dist2d(dr.pos, live.c) > live.r) continue
+          goal = dist2d(dr.pos, pos2) <= (dr.radius || 8) ? pos2 : [dr.pos[0], dr.pos[1]]
+          break
         }
       }
-      if (cube) goal = [cube.pos[0], cube.pos[1]]
     }
 
-    // f. idle — walk silently to the next circle and scan
+    // f. var/hide — walk silently (<= ~4.5 m/s) to the cached hide spot; grab nearby cubes
+    // only once standing at it; loot/crate approaches dropped entirely.
     if (goal === null && strafeOf === null) {
-      goal = [obs.zone.next_center[0], obs.zone.next_center[1]]
+      const spot = this.hideSpot(obs.zone, obs)
+      goal = spot ?? [obs.zone.next_center[0], obs.zone.next_center[1]]
       silent = true
+      if (spot && dist2d(spot, pos2) < 2) {
+        let cube: Observation["cubes"][number] | null = null
+        let cubeDist = Infinity
+        for (const c of obs.cubes) {
+          if (dist2d(c.pos, live.c) > live.r - 5) continue
+          const d = dist2d(c.pos, pos2)
+          if (d < cubeDist) { cube = c; cubeDist = d }
+        }
+        if (cube) { goal = [cube.pos[0], cube.pos[1]]; silent = false }
+      }
     }
 
     // I5: a visible crate/NPC must not break the 5 s no-damage regen
     if (healing && target?.kind !== "mech") a.fire = [false, false]
+    // var/hide: fire only at whoever is damaging us (2 s window)
+    {
+      const ld = this.combat.lastDamaged
+      const damagerRecent = ld && obs.tick - ld.tObsTick <= 40
+      if (!damagerRecent || target?.id !== ld!.byId) a.fire = [false, false]
+    }
 
     // ----- movement through the Navigator (single call per tick) -----
     let navGoal: Vec2
@@ -383,6 +387,51 @@ export class Brain {
   }
 
   // ---------- internals ----------
+
+  /**
+   * var/hide: a spot deep inside the next circle next to a tall prism (base/top >= 4 m) and
+   * out of the live circle center's line of sight. Memoized per next-circle position.
+   */
+  private hideSpot(zone: ZoneObs, obs: Observation): Vec2 | null {
+    const key = `${zone.next_center[0].toFixed(0)},${zone.next_center[1].toFixed(0)}`
+    if (this.hideSpotFor === key) return this.hideSpotCache
+    this.hideSpotFor = key
+    const m = this.map
+    if (!this.tallCells) {
+      const out: [number, number][] = []
+      for (let k = 0; k < m.cellPrisms.length; k++) {
+        const pr = m.cellPrisms[k]
+        if (!pr) continue
+        for (const it of pr) {
+          if (it.top - it.base >= 4) {
+            out.push([m.minX + ((k % m.nx) + 0.5) * m.step, m.minY + (Math.floor(k / m.nx) + 0.5) * m.step])
+            break
+          }
+        }
+      }
+      this.tallCells = out
+    }
+    const eyeZ = obs.self.pos[2] + (this.hello.config.mech.eye_height ?? 8)
+    let best: Vec2 | null = null
+    let bestScore = -Infinity
+    for (const [tx, ty] of this.tallCells) {
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2
+        for (const r of [3, 4.5, 6]) {
+          const x = tx + Math.cos(a) * r
+          const y = ty + Math.sin(a) * r
+          const dNext = Math.hypot(x - zone.next_center[0], y - zone.next_center[1])
+          if (dNext > zone.next_radius * 0.8) continue
+          if (!feasible(m, x, y) || feasible(m, tx, ty)) continue // near the wall, not inside it
+          if (this.los([x, y, eyeZ], [zone.center[0], zone.center[1], eyeZ])) continue
+          const score = -(Math.hypot(x - obs.self.pos[0], y - obs.self.pos[1]) + 0.6 * dNext)
+          if (score > bestScore) { bestScore = score; best = [x, y] }
+        }
+      }
+    }
+    this.hideSpotCache = best
+    return best
+  }
 
   /** A point at 0.6 × next_radius from next_center toward us, backed off until feasible. */
   private prePositionPoint(pos2: Vec2, zone: ZoneObs): Vec2 {
