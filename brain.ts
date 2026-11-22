@@ -58,14 +58,15 @@ const RANGE_BANDS: Record<string, [number, number]> = {
   mortar: [60, 150],
 }
 /** §10 priority order — first offer choice whose id CONTAINS the token wins. */
+// fp/drones: plating > armor > gun_rate > gun_damage > nanites > rest
 const UPGRADE_PRIORITY = [
   "plating",
   "armor",
+  "gun_rate",
+  "gun_damage",
   "nanites",
   "laser_damage",
   "laser_charge",
-  "gun_rate",
-  "gun_damage",
   "lightning_efficiency",
   "gyros",
   "servos",
@@ -152,6 +153,8 @@ export class Brain {
   private stuck: StuckLike | null = null
   private strafeSign: number
   private strafeFlipAt: number
+  /** fp/drones: recent damage by a mech (ms-window via obs.tick) */
+  private lastMechHitTick = -9999
   private burstUntil = -1
   private perpUntil = -1
   private perpSign = 1
@@ -198,8 +201,24 @@ export class Brain {
     }
 
     const primary = me.weapons[1]?.kind ?? me.weapons[0]?.kind ?? "gun"
-    const decision = this.decideFn(obs, this.combat, { los: this.los })
+    // fp/drones: in the first 75 s ignore mechs unless one is damaging us — hand decide() a
+    // mech-filtered obs so its target/aim/fire go to drones and crates only.
+    let pveObs = obs
+    if (obs.t < 75 && obs.tick - this.lastMechHitTick > 50) {
+      pveObs = { ...obs, mechs: obs.mechs.filter((m) => m.kind !== "mech") } as Observation
+    }
+    const decision = this.decideFn(pveObs, this.combat, { los: this.los })
     const target = decision?.target ?? null
+    // fp/drones: remember whether a mech is shooting us right now
+    for (const ev of obs.events) {
+      if ((ev.type as string) === "damaged" && (ev as unknown as { by: number | null }).by != null) {
+        const by = (ev as unknown as { by: number }).by!
+        if (by >= 0 && by <= 15) {
+          this.lastMechHitTick = obs.tick
+          break
+        }
+      }
+    }
 
     // C1: decide's target carries only {id, kind} — resolve the actor from obs by id
     const targetMech = target?.kind === "mech" ? (obs.mechs.find((m) => m.id === target.id) ?? null) : null
@@ -228,10 +247,24 @@ export class Brain {
       if (dNext > 0 && tToStart <= dNext / walkSpeed + 10) goal = this.prePositionPoint(pos2, obs.zone)
     }
 
-    // b. fight — decide() owns aim/fire; strafe the mech it targets (else the nearest) within 200 m
+    // b0. fp/drones: walk over every visible cube before PVE/loot (first 75 s, no mech fire on us)
+    if (goal === null && strafeOf === null && obs.t < 75 && obs.tick - this.lastMechHitTick > 50) {
+      let cube: Observation["cubes"][number] | null = null
+      let cubeDist = Infinity
+      for (const c of obs.cubes) {
+        if (dist2d(c.pos, live.c) > live.r - 5) continue
+        const d = dist2d(c.pos, pos2)
+        if (d < cubeDist) { cube = c; cubeDist = d }
+      }
+      if (cube) goal = [cube.pos[0], cube.pos[1]]
+    }
+
+    // b. fight — decide() owns aim/fire; strafe the mech it targets (else the nearest) within 200 m.
+    // fp/drones: in the first 75 s mechs are ignored unless they damage us.
     if (goal === null) {
-      if (targetMech && dist2d(targetMech.pos, pos2) <= 200) strafeOf = targetMech
-      else if (enemy && enemyDist <= 200) strafeOf = enemy
+      const pveWindow = obs.t < 75 && obs.tick - this.lastMechHitTick > 50
+      if (targetMech && dist2d(targetMech.pos, pos2) <= 200 && !pveWindow) strafeOf = targetMech
+      else if (enemy && enemyDist <= 200 && !pveWindow) strafeOf = enemy
     }
     // M5: disengage against the same mech we strafe
     const disengaging = strafeOf !== null && me.hp < 0.3 * me.max_hp && (strafeOf.hp ?? 0) > me.hp
@@ -253,6 +286,22 @@ export class Brain {
     if (goal === null && strafeOf === null && enemy === null && me.hp < 0.7 * me.max_hp) {
       goal = pos2
       healing = true
+    }
+
+    // d0. fp/drones: first 75 s — chase the nearest npc/crate within 150 m unless being shot by a mech
+    if (goal === null && obs.t < 75 && obs.tick - this.lastMechHitTick > 50) {
+      let pv: { pos: Vec3; d: number } | null = null
+      let pvd = Infinity
+      for (const m of obs.mechs) {
+        if (m.kind !== "npc") continue
+        const d = dist2d(m.pos, pos2)
+        if (d < pvd) { pvd = d; pv = { pos: m.pos, d } }
+      }
+      for (const c of obs.crates) {
+        const d = dist2d(c.pos, pos2)
+        if (d < pvd) { pvd = d; pv = { pos: c.pos, d } }
+      }
+      if (pv && pvd <= 150) goal = dist2d(pv.pos, pos2) > 12 ? [pv.pos[0], pv.pos[1]] : pos2
     }
 
     // d. loot — walk to the best takeable weapon pickup within 80 m
