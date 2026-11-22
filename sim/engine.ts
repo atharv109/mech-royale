@@ -996,6 +996,14 @@ export class Engine {
   // ---------- per-tick systems + step ----------
 
   step(dt: number) {
+    // Task 9 instrumentation: t=90s signature snapshot per mech
+    if (this.t < 90 && this.t + dt >= 90) {
+      for (const m of this.mechs) {
+        const mx = m as unknown as { sigCubesAt90?: number; sigSpecialsAt90?: number }
+        mx.sigCubesAt90 = m.cubes
+        mx.sigSpecialsAt90 = m.weapons.filter((w) => w && w.kind !== "gun").length
+      }
+    }
     this.t += dt
     this.tick++
     // zone timeline
