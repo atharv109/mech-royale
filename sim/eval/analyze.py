@@ -71,5 +71,26 @@ def report(paths):
     return mean
 
 
+def paired(path_a, path_b):
+    """PAIRED difference on shared seeds: mean of per-seed deltas + SE."""
+    a = {r["seed"]: r["score"] for r in load([path_a])}
+    b = {r["seed"]: r["score"] for r in load([path_b])}
+    shared = sorted(set(a) & set(b))
+    if len(shared) < 2:
+        print(f"paired: only {len(shared)} shared seeds — nothing to compare")
+        return 0.0
+    deltas = [a[s] - b[s] for s in shared]
+    mean = sum(deltas) / len(deltas)
+    var = sum((d - mean) ** 2 for d in deltas) / (len(deltas) - 1)
+    se = (var / len(deltas)) ** 0.5
+    wins = sum(1 for d in deltas if d > 0)
+    losses = sum(1 for d in deltas if d < 0)
+    print(f"paired n={len(shared)}: delta={mean:+.2f} ± {se:.2f} (A-B) wins={wins} losses={losses} ties={len(shared)-wins-losses}")
+    return mean
+
+
 if __name__ == "__main__":
-    report(sys.argv[1:])
+    if len(sys.argv) == 4 and "--pair" == sys.argv[1]:
+        paired(sys.argv[2], sys.argv[3])
+    else:
+        report(sys.argv[1:])
