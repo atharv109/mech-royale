@@ -1,246 +1,343 @@
-/**
- * Map module for the Mech Royale bot. Loads the static map (protocol.md §11) into a 1 m grid
- * once at startup, then answers queries fast enough for the 50 ms tick budget.
- *
- *   import { loadMap, ground, surface, feasible, intervals, los } from "./map.ts"
- *   const map = loadMap(hello.map.dir)          // synchronous, well under 3 s on the kit map
- *   los(map, self.pos, enemy.pos)               // buildings/bridges/terrain block, trees do not (§8)
- *
- * Grid conventions (§11): cell (i, j) covers [minX + i, minX + i + 1) x [minY + j, minY + j + 1),
- * row-major index j * nx + i. Terrain vertices sit on the 1 m lattice at (minX + i, minY + j)
- * and are sampled bilinearly, clamped to the grid edge outside it.
- */
-
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
-export type Vec3 = [number, number, number] // x east, y north, z up (m). Yaw: 0=+x, CCW+. Pitch: up+
-export interface Interval {
-  base: number
-  top: number
-}
-export interface GameMap {
-  readonly nx: number
-  readonly ny: number
-  readonly step: number
-  readonly minX: number
-  readonly minY: number
-  /** raw cm heights, row-major index j*nx+i */
-  terrain: Int16Array
-  /** standing surface s per cell (m) */
-  cellSurf: Float32Array
-  /** 1 = walkable */
-  cellFeasible: Uint8Array
-  /** prism intervals whose footprint (ring minus holes) covers the cell; null where none */
-  cellPrisms: (Interval[] | null)[]
-}
+// 1 m raster of the static world: ground height, solid column (base..top) of prisms.
+export class WorldMap {
+  minX = 0
+  minY = 0
+  nx = 0
+  ny = 0
+  ground!: Float32Array
+  top!: Float32Array // max prism top over the cell (-inf if none)
+  base!: Float32Array // min prism base over the cell
+  // navigation grid (2 m cells)
+  nnx = 0
+  nny = 0
+  walk!: Uint8Array
+  dist!: Float32Array
+  heap!: Int32Array
+  goalKey = ""
 
-export const CELL_SIZE: number = 1
-
-/** A prism with base >= terrain + 9 m clears the mech (9 m tall): walk under it; it still blocks shots. */
-const OVERHEAD_CLEARANCE = 9
-/** Mech radius 2.5 m on 1 m center-rasterized cells: a ledge cell at Chebyshev offset <= 2 has a
- *  face < 2.5 m from this cell's center, so the center cannot stand here. */
-const FEASIBILITY_RADIUS = 2
-/** Mech radius (§5): a center closer than this to the world edge (a wall, §7) cannot stand. */
-const MECH_RADIUS = 2.5
-
-type WorldPrism = { kind: string; base: number; top: number; ring: number[]; holes?: number[][] }
-
-const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v)
-
-export function loadMap(dir: string, stepUp = 1.2): GameMap {
-  const world = JSON.parse(readFileSync(join(dir, "v2", "world.json"), "utf8"))
-  const t = world.terrain
-  const nx: number = t.nx
-  const ny: number = t.ny
-  const step: number = t.step
-  const minX: number = t.minX
-  const minY: number = t.minY
-  const n = nx * ny
-
-  const buf = readFileSync(join(dir, "v2", t.file ?? "terrain.i16"))
-  if (buf.length < n * 2) throw new Error(`terrain.i16 too small: ${buf.length} bytes, expected ${n * 2}`)
-  const terrain = decodeInt16LE(buf, n)
-
-  // Standing surface starts at the bilinear terrain height (m) at each cell center.
-  const cellSurf = new Float32Array(n)
-  for (let j = 0; j < ny; j++) {
-    const cy = minY + (j + 0.5) * step
-    for (let i = 0; i < nx; i++) {
-      cellSurf[j * nx + i] = terrainAtCM(terrain, nx, ny, minX, minY, step, minX + (i + 0.5) * step, cy) * 0.01
-    }
+  constructor(dir: string) {
+    const world = JSON.parse(readFileSync(join(dir, "v2/world.json"), "utf8"))
+    const t = world.terrain
+    this.minX = t.minX
+    this.minY = t.minY
+    this.nx = t.nx
+    this.ny = t.ny
+    const raw = readFileSync(join(dir, "v2/" + (t.file ?? "terrain.i16")))
+    const i16 = new Int16Array(raw.buffer, raw.byteOffset, raw.byteLength >> 1)
+    const n = this.nx * this.ny
+    this.ground = new Float32Array(n)
+    const sc = t.scale ?? 0.01
+    for (let i = 0; i < n; i++) this.ground[i] = i16[i] * sc
+    this.top = new Float32Array(n).fill(-1e9)
+    this.base = new Float32Array(n).fill(1e9)
+    for (const p of world.prisms) this.raster(p)
+    this.buildNav()
   }
 
-  // Rasterize prisms onto the grid: a cell is covered iff its CENTER is inside the ring and
-  // outside every hole. Covered prisms raise the surface unless they are overhead (walk under),
-  // and are always stored in cellPrisms because they block LOS/shots.
-  const cellPrisms: (Interval[] | null)[] = new Array(n).fill(null)
-  const ground0 = cellSurf.slice() // terrain-only ground per cell, for the overhead test
-  for (const p of world.prisms as WorldPrism[]) {
-    if (p.kind !== "building" && p.kind !== "stadium" && p.kind !== "bridge") continue
-    const ring = p.ring
-    const holes = p.holes ?? []
-    let px0 = Infinity, px1 = -Infinity, py0 = Infinity, py1 = -Infinity
-    for (let k = 0; k < ring.length; k += 2) {
-      if (ring[k] < px0) px0 = ring[k]
-      if (ring[k] > px1) px1 = ring[k]
-      if (ring[k + 1] < py0) py0 = ring[k + 1]
-      if (ring[k + 1] > py1) py1 = ring[k + 1]
+  private raster(p: any) {
+    const ring: number[] = p.ring
+    const holes: number[][] = (p.holes ?? []).map((h: any) => (Array.isArray(h[0]) ? h.flat() : h))
+    let y0 = 1e9, y1 = -1e9
+    for (let i = 1; i < ring.length; i += 2) {
+      y0 = Math.min(y0, ring[i])
+      y1 = Math.max(y1, ring[i])
     }
-    const i0 = clamp(Math.floor((px0 - minX) / step - 0.5), 0, nx - 1)
-    const i1 = clamp(Math.ceil((px1 - minX) / step - 0.5), 0, nx - 1)
-    const j0 = clamp(Math.floor((py0 - minY) / step - 0.5), 0, ny - 1)
-    const j1 = clamp(Math.ceil((py1 - minY) / step - 0.5), 0, ny - 1)
+    const j0 = Math.max(0, Math.floor(y0 - this.minY)), j1 = Math.min(this.ny - 1, Math.ceil(y1 - this.minY))
     for (let j = j0; j <= j1; j++) {
-      const cy = minY + (j + 0.5) * step
-      for (let i = i0; i <= i1; i++) {
-        const cx = minX + (i + 0.5) * step
-        if (!pointInPoly(cx, cy, ring)) continue
-        if (holes.some((h) => pointInPoly(cx, cy, h))) continue
-        const k = j * nx + i
-        ;(cellPrisms[k] ??= []).push({ base: p.base, top: p.top })
-        if (p.base < ground0[k] + OVERHEAD_CLEARANCE && p.top > cellSurf[k]) cellSurf[k] = p.top
+      const y = this.minY + j + 0.0001
+      const xs: number[] = []
+      const polys = [ring, ...holes]
+      for (const poly of polys) {
+        const m = poly.length >> 1
+        for (let a = 0; a < m; a++) {
+          const b = (a + 1) % m
+          const ax = poly[2 * a], ay = poly[2 * a + 1], bx = poly[2 * b], by = poly[2 * b + 1]
+          if ((ay <= y && by > y) || (by <= y && ay > y)) xs.push(ax + ((y - ay) / (by - ay)) * (bx - ax))
+        }
+      }
+      xs.sort((a, b) => a - b)
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const i0 = Math.max(0, Math.ceil(xs[k] - this.minX)), i1 = Math.min(this.nx - 1, Math.floor(xs[k + 1] - this.minX))
+        for (let i = i0; i <= i1; i++) {
+          const idx = j * this.nx + i
+          if (p.top > this.top[idx]) this.top[idx] = p.top
+          if (p.base < this.base[idx]) this.base[idx] = p.base
+        }
       }
     }
   }
 
-  // Feasibility = mech-radius clearance from LEDGES (a cell whose surface rises > stepUp above a
-  // 4-neighbour: building walls, deck edges, terrain cliffs). Smooth slopes make no ledges; the
-  // per-step slope/step-up limit is applied by nav on each A* edge (rise <= stepUp per 1 m cell ~ 50°).
-  // Note: cellSurf is Float32 while prism tops are float64; any future equality-style comparison
-  // of the two (e.g. top > cellSurf + eps) needs eps >= 1e-3 to avoid rounding false hits.
-  const ledge = new Float32Array(n).fill(-Infinity)
-  for (let j = 0; j < ny; j++) {
-    for (let i = 0; i < nx; i++) {
-      const k = j * nx + i
-      const s = cellSurf[k]
-      if ((i > 0 && s - cellSurf[k - 1] > stepUp) || (i < nx - 1 && s - cellSurf[k + 1] > stepUp) ||
-          (j > 0 && s - cellSurf[k - nx] > stepUp) || (j < ny - 1 && s - cellSurf[k + nx] > stepUp)) ledge[k] = s
-    }
+  idx(x: number, y: number) {
+    let i = Math.round(x - this.minX), j = Math.round(y - this.minY)
+    if (i < 0) i = 0
+    else if (i >= this.nx) i = this.nx - 1
+    if (j < 0) j = 0
+    else if (j >= this.ny) j = this.ny - 1
+    return j * this.nx + i
   }
-  const cellFeasible = new Uint8Array(n)
-  const rowMax = new Float32Array(n)
-  const R = FEASIBILITY_RADIUS
-  for (let j = 0; j < ny; j++) {
-    const off = j * nx
-    for (let i = 0; i < nx; i++) {
-      let m = -Infinity
-      for (let k = Math.max(0, i - R), hi = Math.min(nx - 1, i + R); k <= hi; k++) {
-        const v = ledge[off + k]
-        if (v > m) m = v
+
+  groundAt(x: number, y: number) {
+    const fx = x - this.minX, fy = y - this.minY
+    let i = Math.floor(fx), j = Math.floor(fy)
+    if (i < 0) i = 0
+    if (j < 0) j = 0
+    if (i > this.nx - 2) i = this.nx - 2
+    if (j > this.ny - 2) j = this.ny - 2
+    const tx = Math.min(1, Math.max(0, fx - i)), ty = Math.min(1, Math.max(0, fy - j))
+    const g = this.ground, n = this.nx, k = j * n + i
+    return (g[k] * (1 - tx) + g[k + 1] * tx) * (1 - ty) + (g[k + n] * (1 - tx) + g[k + n + 1] * tx) * ty
+  }
+
+  // Surface a mech would stand on at (x,y) given it is around height z.
+  surfaceAt(x: number, y: number) {
+    const k = this.idx(x, y)
+    const g = this.groundAt(x, y)
+    if (this.top[k] > g + 0.5 && this.base[k] < g + 1) return this.top[k]
+    return g
+  }
+
+  // true if the segment a->b clears all prisms and terrain (sampled ~every 1 m).
+  los(ax: number, ay: number, az: number, bx: number, by: number, bz: number) {
+    const dx = bx - ax, dy = by - ay, dz = bz - az
+    const len = Math.hypot(dx, dy)
+    const steps = Math.max(1, Math.ceil(len))
+    for (let s = 1; s < steps; s++) {
+      const f = s / steps
+      const x = ax + dx * f, y = ay + dy * f, z = az + dz * f
+      const k = this.idx(x, y)
+      if (z < this.top[k] && z > this.base[k]) return false
+      if (z < this.ground[k] - 0.3) return false
+    }
+    return true
+  }
+
+  // ---------------- navigation (2 m cells, ground-level only)
+  private buildNav() {
+    this.nnx = Math.ceil(this.nx / 2)
+    this.nny = Math.ceil(this.ny / 2)
+    const N = this.nnx * this.nny
+    this.walk = new Uint8Array(N)
+    for (let J = 0; J < this.nny; J++)
+      for (let I = 0; I < this.nnx; I++) {
+        let ok = 1
+        // the mech is r=2.5: require clearance in a 5x5 m window
+        for (let dj = -2; dj <= 3 && ok; dj++)
+          for (let di = -2; di <= 3 && ok; di++) {
+            const i = I * 2 + di, j = J * 2 + dj
+            if (i < 0 || j < 0 || i >= this.nx || j >= this.ny) {
+              ok = 0
+              break
+            }
+            const k = j * this.nx + i
+            const g = this.ground[k]
+            if (this.top[k] > g + 1.2 && this.base[k] < g + 9.5) ok = 0
+          }
+        if (ok) {
+          // slope check against neighbours
+          const i = Math.min(this.nx - 3, I * 2), j = Math.min(this.ny - 3, J * 2)
+          const g = this.ground[j * this.nx + i]
+          if (Math.abs(this.ground[j * this.nx + i + 2] - g) > 2.2 || Math.abs(this.ground[(j + 2) * this.nx + i] - g) > 2.2) ok = 0
+        }
+        this.walk[J * this.nnx + I] = ok
       }
-      rowMax[off + i] = m
-    }
+    this.dist = new Float32Array(N).fill(1e9)
+    this.heap = new Int32Array(N * 4)
   }
-  for (let j = 0; j < ny; j++) {
-    const off = j * nx
-    for (let i = 0; i < nx; i++) {
-      let m = -Infinity
-      for (let k = Math.max(0, j - R), hi = Math.min(ny - 1, j + R); k <= hi; k++) {
-        const v = rowMax[k * nx + i]
-        if (v > m) m = v
+
+  cellOf(x: number, y: number) {
+    let I = Math.round((x - this.minX) / 2), J = Math.round((y - this.minY) / 2)
+    I = Math.max(0, Math.min(this.nnx - 1, I))
+    J = Math.max(0, Math.min(this.nny - 1, J))
+    return J * this.nnx + I
+  }
+
+  walkSegment(x: number, y: number, gx: number, gy: number) {
+    let prev = this.cellOf(x, y)
+    // Let normal steering move the avatar out of conservatively blocked start cells.
+    if (!this.walk[prev]) return true
+    const steps = Math.max(1, Math.ceil(Math.hypot(gx - x, gy - y)))
+    for (let step = 1; step <= steps; step++) {
+      const f = step / steps
+      const cell = this.cellOf(x + (gx - x) * f, y + (gy - y) * f)
+      if (!this.walk[cell]) return false
+      const dx = cell % this.nnx - prev % this.nnx
+      const dy = Math.floor(cell / this.nnx) - Math.floor(prev / this.nnx)
+      if (dx && dy && (!this.walk[prev + dx] || !this.walk[prev + dy * this.nnx])) return false
+      prev = cell
+    }
+    return true
+  }
+
+  // Time-sliced Dijkstra (8-conn) distance field from a goal. field() requests a goal,
+  // pump() spends a bounded amount of time on it; steer() reads the last finished field.
+  work!: Float32Array
+  hk!: Float32Array
+  hn = 0
+  pendingKey = ""
+  pendingGoal: [number, number] = [0, 0]
+  readyGoal: [number, number] | null = null
+
+  field(gx: number, gy: number) {
+    const key = `${Math.round(gx / 5)},${Math.round(gy / 5)}`
+    if (key === this.pendingKey) return
+    if (!this.pendingKey && key === this.goalKey) return
+    // don't thrash: if a computation is running for a nearby goal, let it finish
+    if (this.pendingKey && Math.hypot(gx - this.pendingGoal[0], gy - this.pendingGoal[1]) < 25) return
+    const W = this.nnx, H = this.nny, walk = this.walk
+    if (!this.work) {
+      this.work = new Float32Array(this.dist.length)
+      this.hk = new Float32Array(this.heap.length)
+    }
+    this.work.fill(1e9)
+    this.hn = 0
+    let g = this.cellOf(gx, gy)
+    if (!walk[g]) {
+      let best = -1, bd = 1e9
+      const gi = g % W, gj = (g / W) | 0
+      for (let r = 1; r < 30 && best < 0; r++)
+        for (let dj = -r; dj <= r; dj++)
+          for (let di = -r; di <= r; di++) {
+            const i = gi + di, j = gj + dj
+            if (i < 0 || j < 0 || i >= W || j >= H) continue
+            const k = j * W + i
+            if (walk[k] && di * di + dj * dj < bd) {
+              bd = di * di + dj * dj
+              best = k
+            }
+          }
+      if (best >= 0) g = best
+    }
+    this.work[g] = 0
+    this.push(g, 0)
+    this.pendingKey = key
+    this.pendingGoal = [gx, gy]
+  }
+
+  private push(k: number, v: number) {
+    const hk = this.hk, hv = this.heap
+    let i = this.hn++
+    while (i > 0) {
+      const p = (i - 1) >> 1
+      if (hk[p] <= v) break
+      hk[i] = hk[p]
+      hv[i] = hv[p]
+      i = p
+    }
+    hk[i] = v
+    hv[i] = k
+  }
+
+  private pop() {
+    const hk = this.hk, hv = this.heap
+    const top = hv[0]
+    const n = --this.hn
+    const lv = hk[n], lk = hv[n]
+    let i = 0
+    while (true) {
+      let c = 2 * i + 1
+      if (c >= n) break
+      if (c + 1 < n && hk[c + 1] < hk[c]) c++
+      if (hk[c] >= lv) break
+      hk[i] = hk[c]
+      hv[i] = hv[c]
+      i = c
+    }
+    hk[i] = lv
+    hv[i] = lk
+    return top
+  }
+
+  // maxIter bounds the work per call (deterministic); budgetMs is a wall-clock safety cap.
+  pump(budgetMs: number, maxIter = Infinity) {
+    if (!this.pendingKey) return
+    const W = this.nnx, H = this.nny, d = this.work, walk = this.walk, hk = this.hk
+    const D = Math.SQRT2
+    const t0 = performance.now()
+    let iter = 0
+    while (this.hn > 0) {
+      if (++iter > maxIter) return
+      if ((iter & 1023) === 0 && performance.now() - t0 > budgetMs) return
+      if (this.hn > this.heap.length - 16) break
+      const v0 = hk[0]
+      const k = this.pop()
+      if (v0 > d[k]) continue
+      const i = k % W, j = (k / W) | 0
+      for (let dj = -1; dj <= 1; dj++)
+        for (let di = -1; di <= 1; di++) {
+          if (!di && !dj) continue
+          const ii = i + di, jj = j + dj
+          if (ii < 0 || jj < 0 || ii >= W || jj >= H) continue
+          const kk = jj * W + ii
+          if (!walk[kk]) continue
+          if (di && dj && (!walk[j * W + ii] || !walk[jj * W + i])) continue
+          const nv = v0 + (di && dj ? D : 1)
+          if (nv < d[kk]) {
+            d[kk] = nv
+            this.push(kk, nv)
+          }
+        }
+    }
+    const tmp = this.dist
+    this.dist = this.work
+    this.work = tmp
+    this.goalKey = this.pendingKey
+    this.readyGoal = this.pendingGoal
+    this.pendingKey = ""
+  }
+
+  // True when the finished field is for a goal near (gx, gy).
+  fieldFor(gx: number, gy: number, tol = 20) {
+    return !!this.readyGoal && Math.hypot(gx - this.readyGoal[0], gy - this.readyGoal[1]) < tol
+  }
+
+  // Direction to follow the current distance field from (x,y); null if no path info.
+  steer(x: number, y: number): [number, number] | null {
+    const W = this.nnx, H = this.nny, d = this.dist
+    const c = this.cellOf(x, y)
+    const ci = c % W, cj = (c / W) | 0
+    let best = d[c], bi = 0, bj = 0
+    // look a few cells out for the lowest reachable value along straight lines
+    for (let a = 0; a < 24; a++) {
+      const ang = (a / 24) * Math.PI * 2
+      const ca = Math.cos(ang), sa = Math.sin(ang)
+      for (let r = 1; r <= 5; r++) {
+        const i = Math.round(ci + ca * r), j = Math.round(cj + sa * r)
+        if (i < 0 || j < 0 || i >= W || j >= H) break
+        const k = j * W + i
+        if (!this.walk[k]) break
+        const v = d[k] + r * 0.02
+        if (v < best) {
+          best = v
+          bi = i - ci
+          bj = j - cj
+        }
       }
-      cellFeasible[off + i] = m <= cellSurf[off + i] + stepUp ? 1 : 0
     }
+    if (!bi && !bj) return null
+    const l = Math.hypot(bi, bj)
+    return [bi / l, bj / l]
   }
 
-  // The map edge is a wall (§7): a center within MECH_RADIUS of world.bounds cannot stand there.
-  const b = world.bounds
-  for (let j = 0; j < ny; j++) {
-    const cy = minY + (j + 0.5) * step
-    for (let i = 0; i < nx; i++) {
-      const cx = minX + (i + 0.5) * step
-      if (Math.min(cx - b.minX, b.maxX - cx, cy - b.minY, b.maxY - cy) < MECH_RADIUS) cellFeasible[j * nx + i] = 0
-    }
+  // Nearby walkable point that hides from (ex,ey,ez) eye, searching rings around (x,y).
+  coverFrom(x: number, y: number, ex: number, ey: number, ez: number, maxR = 40): [number, number] | null {
+    let best: [number, number] | null = null, bs = 1e9
+    for (let r = 6; r <= maxR; r += 6)
+      for (let a = 0; a < 16; a++) {
+        const ang = (a / 16) * Math.PI * 2
+        const px = x + Math.cos(ang) * r, py = y + Math.sin(ang) * r
+        if (!this.walk[this.cellOf(px, py)]) continue
+        const pz = this.groundAt(px, py)
+        if (this.los(ex, ey, ez, px, py, pz + 6)) continue
+        const away = Math.hypot(px - ex, py - ey) - Math.hypot(x - ex, y - ey)
+        const s = r - away * 0.3
+        if (s < bs) {
+          bs = s
+          best = [px, py]
+        }
+      }
+    return best
   }
-
-  return { nx, ny, step, minX, minY, terrain, cellSurf, cellFeasible, cellPrisms }
-}
-
-/** terrain.i16 is little-endian int16 cm. Typed arrays are platform-endian; swap bytes if not. */
-function decodeInt16LE(buf: Buffer, count: number): Int16Array {
-  if (new Uint8Array(new Int16Array([1]).buffer)[0] === 1) return new Int16Array(buf.buffer, buf.byteOffset, count)
-  const u = new Uint8Array(count * 2)
-  for (let k = 0; k < u.length; k += 2) {
-    u[k] = buf[k + 1]
-    u[k + 1] = buf[k]
-  }
-  return new Int16Array(u.buffer, 0, count)
-}
-
-/** Bilinear terrain height at (x, y) in centimeters; clamps to the grid edge outside it. */
-function terrainAtCM(terrain: Int16Array, nx: number, ny: number, minX: number, minY: number, step: number, x: number, y: number): number {
-  const fx = clamp((x - minX) / step, 0, nx - 1)
-  const fy = clamp((y - minY) / step, 0, ny - 1)
-  const i = Math.max(0, Math.min(Math.floor(fx), nx - 2))
-  const j = Math.max(0, Math.min(Math.floor(fy), ny - 2))
-  const tx = fx - i
-  const ty = fy - j
-  const r0 = j * nx + i
-  const r1 = r0 + nx
-  const h00 = terrain[r0], h10 = terrain[r0 + 1], h01 = terrain[r1], h11 = terrain[r1 + 1]
-  return (1 - tx) * (1 - ty) * h00 + tx * (1 - ty) * h10 + (1 - tx) * ty * h01 + tx * ty * h11
-}
-
-/** Even-odd point-in-polygon over a flat [x0, y0, x1, y1, ...] ring. */
-export function pointInPoly(x: number, y: number, flat: number[]): boolean {
-  let inside = false
-  const m = flat.length / 2
-  for (let k = 0, l = m - 1; k < m; l = k++) {
-    const x1 = flat[l * 2], y1 = flat[l * 2 + 1]
-    const x2 = flat[k * 2], y2 = flat[k * 2 + 1]
-    if (y1 > y !== y2 > y && x < ((x2 - x1) * (y - y1)) / (y2 - y1) + x1) inside = !inside
-  }
-  return inside
-}
-
-function cellAt(map: GameMap, x: number, y: number): number {
-  const i = Math.floor((x - map.minX) / map.step)
-  const j = Math.floor((y - map.minY) / map.step)
-  return i >= 0 && i < map.nx && j >= 0 && j < map.ny ? j * map.nx + i : -1
-}
-
-/** Terrain height (m) at (x, y); clamped to the grid edge outside the grid. */
-export function ground(map: GameMap, x: number, y: number): number {
-  return terrainAtCM(map.terrain, map.nx, map.ny, map.minX, map.minY, map.step, x, y) * 0.01
-}
-
-/** Standing surface (m) at (x, y); terrain ground when off-grid. */
-export function surface(map: GameMap, x: number, y: number): number {
-  const k = cellAt(map, x, y)
-  return k < 0 ? ground(map, x, y) : map.cellSurf[k]
-}
-
-/** True when the containing cell is walkable; false off-grid. */
-export function feasible(map: GameMap, x: number, y: number): boolean {
-  const k = cellAt(map, x, y)
-  return k >= 0 && map.cellFeasible[k] === 1
-}
-
-/** Prism intervals covering (x, y); null off-grid, null/[] where no prism covers. */
-export function intervals(map: GameMap, x: number, y: number): Interval[] | null {
-  const k = cellAt(map, x, y)
-  return k < 0 ? null : map.cellPrisms[k]
-}
-
-/**
- * Line of sight from a to b: sample every 1 m (endpoints included). Blocked when a sample is
- * below terrain or inside any prism interval [base, top] (closed) at its cell. Trees ignored.
- */
-export function los(map: GameMap, a: Vec3, b: Vec3): boolean {
-  const dx = b[0] - a[0]
-  const dy = b[1] - a[1]
-  const dz = b[2] - a[2]
-  const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy, dz)))
-  for (let k = 0; k <= steps; k++) {
-    const t = k / steps
-    const x = a[0] + dx * t
-    const y = a[1] + dy * t
-    const z = a[2] + dz * t
-    if (z < ground(map, x, y)) return false
-    const ivs = intervals(map, x, y)
-    if (ivs) for (const iv of ivs) if (iv.base <= z && z <= iv.top) return false
-  }
-  return true
 }
