@@ -228,13 +228,32 @@ export class Brain {
       if (dNext > 0 && tToStart <= dNext / walkSpeed + 10) goal = this.prePositionPoint(pos2, obs.zone)
     }
 
-    // b. fight — decide() owns aim/fire; strafe the mech it targets (else the nearest) within 200 m
+    // b. fight — decide() owns aim/fire. var/hunt: chase the lowest-HP tracked mech within
+    // 250 m that is inside the live zone; decide's target wins when it is that mech.
+    let hunted: ActorObs | null = null
+    {
+      let bestHp = Infinity
+      for (const m of obs.mechs) {
+        if (m.kind !== "mech") continue
+        if (dist2d(m.pos, pos2) > 250) continue
+        if (dist2d(m.pos, live.c) > live.r) continue // not inside the zone: let it rot
+        const hp = m.hp ?? 1e9
+        if (hp < bestHp) {
+          bestHp = hp
+          hunted = m
+        }
+      }
+    }
     if (goal === null) {
       if (targetMech && dist2d(targetMech.pos, pos2) <= 200) strafeOf = targetMech
-      else if (enemy && enemyDist <= 200) strafeOf = enemy
+      else if (hunted && dist2d(hunted.pos, pos2) <= 250) strafeOf = hunted
+      else if (hunted) {
+        // hunted is inside the zone and tracked but out of the 250 ring: close the gap
+        goal = [hunted.pos[0], hunted.pos[1]]
+      } else if (enemy && enemyDist <= 200) strafeOf = enemy
     }
     // M5: disengage against the same mech we strafe
-    const disengaging = strafeOf !== null && me.hp < 0.3 * me.max_hp && (strafeOf.hp ?? 0) > me.hp
+    const disengaging = strafeOf !== null && me.hp < 0.25 * me.max_hp && (strafeOf.hp ?? 0) > me.hp
     this.combat.disengaging = disengaging
 
     // e. supply drops (M6: before heal — capture restores full HP) — landed, in the live zone, uncontested
@@ -255,10 +274,32 @@ export class Brain {
       healing = true
     }
 
-    // d. loot — walk to the best takeable weapon pickup within 80 m
+    // d. loot — walk to the best takeable weapon pickup within 80 m.
+    // var/hunt: in the first 40 s rush the nearest laser/lightning within 250 m.
     if (goal === null && strafeOf === null && obs.t < LOOT_WINDOW_S) {
-      const want = this.preferredPickup(obs.pickups, me.weapons, pos2, PICKUP_MAX_DIST)
-      if (want && dist2d(want.pos, pos2) > pickupRadius) goal = [want.pos[0], want.pos[1]]
+      if (obs.t < 40) {
+        let rush: PickupObs | null = null
+        let rushD = Infinity
+        for (const p of obs.pickups) {
+          if (p.kind !== "laser" && p.kind !== "lightning") continue
+          if (!takePlan(p.kind, me.weapons)) continue // do not rush what we already hold
+          if (dist2d(p.pos, live.c) > live.r - 5) continue // stay inside the live circle
+          const d = dist2d(p.pos, pos2)
+          if (d <= pickupRadius || d > 250) continue
+          if (d < rushD) {
+            rushD = d
+            rush = p
+          }
+        }
+        if (rush) {
+          goal = [rush.pos[0], rush.pos[1]]
+          boost = me.energy > 25
+        }
+      }
+      if (goal === null) {
+        const want = this.preferredPickup(obs.pickups, me.weapons, pos2, PICKUP_MAX_DIST)
+        if (want && dist2d(want.pos, pos2) > pickupRadius) goal = [want.pos[0], want.pos[1]]
+      }
     }
 
     // d. crates/NPCs — loot window, no mech visible: approach decide's crate/NPC target within 60 m
