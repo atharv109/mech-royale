@@ -387,7 +387,7 @@ export class Brain {
 
     // a5. ag/push -- holding enough cubes and healthy: hunt the nearest mech seen or heard
     // in the last 10 s and inside the next circle (within 250 m) instead of waiting for it
-    if (goal === null && me.hp > 0.7 * me.max_hp && me.cubes >= 3) {
+    if (goal === null && me.hp > 0.6 * me.max_hp && me.cubes >= 1) {
       let huntp: Vec3 | null = null
       let huntpD = Infinity
       let hKey = -2
