@@ -56,7 +56,7 @@ const PREP_FRACTIONS = [0.6, 0.45, 0.3, 0.2]
 const RANGE_BANDS: Record<string, [number, number]> = {
   gun: [50, 90],
   laser: [70, 160],
-  lightning: [20, 35],
+  lightning: [25, 35], // kr/close: hold lightning range at 25-35 m
   mortar: [60, 150],
 }
 /** §10 priority order — first offer choice whose id CONTAINS the token wins. */

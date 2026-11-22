@@ -176,6 +176,8 @@ export class Engine {
   sigDrones = 0
   sigDrops = 0
   shotsByFocus = 0
+  visTicks = 0
+  hitsByFocus = 0
   projHits = 0
   hitVictims: Record<number, number> = {}
   visRows: Record<number, number> = {}
@@ -687,6 +689,7 @@ export class Engine {
 
   damage(victim: Mech, amount: number, info: { weapon: string; byId: number | null; srcPos: Vec3; src?: Mech | null; effect?: string }) {
     if (!victim.alive || amount <= 0) return
+    if (info.byId === 0 && victim.id !== 0 && info.weapon === "gun") this.hitsByFocus++
     let amt = amount
     let rear = false
     const isZone = info.weapon === "zone"
@@ -1192,6 +1195,8 @@ export class Engine {
       seed: 0,
       shotsByHouse: this.shotsByHouse,
       shotsByFocus: this.shotsByFocus,
+      visTicks: this.visTicks,
+      hitsByFocus: this.hitsByFocus,
       sigCrates: this.sigCrates,
       sigDrones: this.sigDrones,
       sigDrops: this.sigDrops,
