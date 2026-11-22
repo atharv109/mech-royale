@@ -1,8 +1,6 @@
 #!/usr/bin/env python
-"""sim/eval/signature.py - Task 9 behavioral instrumentation from ROW lines.
+"""sim/eval/signature.py - Task 9/10 behavioral instrumentation from ROW lines.
 Usage: python sim/eval/signature.py <file> [file2 ...]
-Prints per variant (avg over seeds): drones killed, crates broken, cubes@90s,
-specials@90s, drops captured, median death time.
 """
 import json, sys
 
@@ -26,9 +24,20 @@ def report(paths):
     dths = sorted(r["deathT"] for r in rows if r.get("deathT") is not None)
     med = dths[len(dths) // 2] if dths else -1
     surv = sum(1 for r in rows if r.get("survived"))
-    print(f"n={n} drones={avg('sigDrones'):.1f} crates={avg('sigCrates'):.1f} "
+    took = {k: round(sum((r.get("botTook") or {}).get(k, 0) for r in rows) / n, 2) for k in ("laser", "lightning", "mortar")}
+    fail = {k: round(sum((r.get("botFail") or {}).get(k, 0) for r in rows) / n, 2) for k in ("gone", "range", "have", "full", "busy")}
+    seen, sd = {}, {}
+    for k in ("laser", "lightning", "mortar"):
+        cnt = sum((r.get("botSeen") or {}).get(k, 0) for r in rows)
+        seen[k] = round(cnt / n, 1)
+        sd[k] = round(sum((r.get("botSeenDist") or {}).get(k, 0) for r in rows) / cnt) if cnt else 0
+    print(f"n={n} dodges={avg('botDodges'):.1f} retreats={avg('botRetreats'):.1f} "
+          f"cover%={100 * avg('sigCoverFrac'):.0f} maxAct={max(r.get('botMaxActMs', 0) for r in rows):.1f}ms slowTicks={sum(r.get('botSlowTicks', 0) for r in rows)}")
+    print(f"   seen={seen} seenDist={sd} walkedTicks={avg('botWalked'):.0f} took={took} fail={fail}")
+    print(f"   drones={avg('sigDrones'):.1f} crates={avg('sigCrates'):.1f} "
           f"cubes@90={avg('sigCubesAt90'):.1f} specials@90={avg('sigSpecialsAt90'):.1f} "
-          f"drops={avg('sigDrops'):.1f} medianDeath={med}s surv={surv}")
+          f"cubesColl={avg('sigCubesCollected'):.1f} drops={avg('sigDrops'):.1f} "
+          f"medianDeath={med}s surv={surv}")
 
 
 if __name__ == "__main__":
