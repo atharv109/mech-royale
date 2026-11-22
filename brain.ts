@@ -51,10 +51,11 @@ const PERP_HOLD_S = 0.5
 /** Pre-position point fractions of next_radius tried until one sits on feasible ground. */
 const PREP_FRACTIONS = [0.6, 0.45, 0.3, 0.2]
 /** Preferred range band per fighting weapon (b. strafe radial term). */
+// fp/duo: laser fights at 40-200 m, lightning closes under 40 m
 const RANGE_BANDS: Record<string, [number, number]> = {
   gun: [50, 90],
-  laser: [70, 160],
-  lightning: [20, 35],
+  laser: [40, 200],
+  lightning: [15, 35],
   mortar: [60, 150],
 }
 /** §10 priority order — first offer choice whose id CONTAINS the token wins. */
@@ -255,10 +256,40 @@ export class Brain {
       healing = true
     }
 
-    // d. loot — walk to the best takeable weapon pickup within 80 m
+    // d. loot — walk to the best takeable weapon pickup within 80 m.
+    // fp/duo: in the first ~90 s rush whichever of laser/lightning we still lack (drop the gun
+    // for the second one: take + drop 0), then behave like v1.
     if (goal === null && strafeOf === null && obs.t < LOOT_WINDOW_S) {
-      const want = this.preferredPickup(obs.pickups, me.weapons, pos2, PICKUP_MAX_DIST)
-      if (want && dist2d(want.pos, pos2) > pickupRadius) goal = [want.pos[0], want.pos[1]]
+      const holdsLaser = me.weapons.some((w) => w?.kind === "laser")
+      const holdsLightning = me.weapons.some((w) => w?.kind === "lightning")
+      if (obs.t < 90 && (!holdsLaser || !holdsLightning)) {
+        const wantKind = !holdsLaser ? "laser" : "lightning"
+        let rush: PickupObs | null = null
+        let rushD = Infinity
+        for (const p of obs.pickups) {
+          if (p.kind !== wantKind) continue
+          if (dist2d(p.pos, live.c) > live.r - 5) continue
+          const d = dist2d(p.pos, pos2)
+          if (d < rushD) { rushD = d; rush = p }
+        }
+        if (rush) {
+          goal = [rush.pos[0], rush.pos[1]]
+          boost = me.energy > 25
+          if (rushD <= pickupRadius) {
+            const a0 = { take: rush.id, ...(me.weapons[0] && !me.weapons[1] ? {} : me.weapons[0] ? {} : {}) } as { take: number; drop?: number }
+            // empty slot exists when weapons[1] is null; otherwise drop the gun (slot 0)
+            const slotsFull = me.weapons[0] !== null && me.weapons[1] !== null
+            if (slotsFull || me.weapons[0]?.kind !== "gun") a0.drop = 0
+            this.lastRushId = rush.id
+            // stash the take for the return action
+            this.pendingRush = a0
+          }
+        }
+      }
+      if (goal === null) {
+        const want = this.preferredPickup(obs.pickups, me.weapons, pos2, PICKUP_MAX_DIST)
+        if (want && dist2d(want.pos, pos2) > pickupRadius) goal = [want.pos[0], want.pos[1]]
+      }
     }
 
     // d. crates/NPCs — loot window, no mech visible: approach decide's crate/NPC target within 60 m
@@ -370,8 +401,15 @@ export class Brain {
     if (decideHasOpinion) a.aim = decision!.aim
     else a.aim = strafeOf ? this.aimAt(pos, strafeOf.pos) : this.scanAim(obs)
 
+    // fp/duo: the queued special take/drop fires this tick
+    if (this.pendingRush) {
+      a.take = this.pendingRush.take
+      if (this.pendingRush.drop !== undefined) a.drop = this.pendingRush.drop
+      this.pendingRush = null
+    }
+
     // opportunistic takes in the loot window (independent of the movement branch)
-    if (obs.t < LOOT_WINDOW_S) {
+    if (obs.t < LOOT_WINDOW_S && !a.take) {
       const p = this.preferredPickup(obs.pickups, me.weapons, pos2, pickupRadius)
       const plan = p ? takePlan(p.kind, me.weapons) : null
       if (p && plan) {
