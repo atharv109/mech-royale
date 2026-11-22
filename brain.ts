@@ -10,6 +10,7 @@
  * for tests.
  */
 import { decide } from "./combat.ts"
+const commandingMove = (d: { atGoal: boolean; move?: [number, number] }) => false
 import type { CombatState } from "./combat.ts"
 import { feasible } from "./map.ts"
 import type { GameMap } from "./map.ts"
@@ -155,6 +156,13 @@ export class Brain {
   private burstUntil = -1
   private perpUntil = -1
   private perpSign = 1
+  /** var/move never-stand-still: seeded jink state */
+  private jinkUntil = -1
+  private jinkOffset: Vec2 = [0, 0]
+  /** var/move threat tracking: last known position per mech id, and the face-the-shooter override */
+  private threats = new Map<number, { pos: Vec3; t: number }>()
+  private faceUntil = -1
+  private faceBearing: Vec2 = [0, 0]
 
   constructor(hello: Hello, map: GameMap, los: LosFn, deps?: BrainDeps) {
     this.hello = hello
@@ -200,6 +208,16 @@ export class Brain {
     const primary = me.weapons[1]?.kind ?? me.weapons[0]?.kind ?? "gun"
     const decision = this.decideFn(obs, this.combat, { los: this.los })
     const target = decision?.target ?? null
+
+    // var/move: track every mech we see; purge after memory window; face damaged bearing 3 s
+    for (const m of obs.mechs) this.threats.set(m.id, { pos: m.pos, t: obs.t })
+    for (const [id, th] of this.threats) if (obs.t - th.t > 5) this.threats.delete(id)
+    for (const ev of obs.events) {
+      if ((ev.type as string) === "damaged" && (ev as unknown as { bearing: number | null }).bearing != null) {
+        this.faceUntil = obs.t + 3
+        this.faceBearing = [(ev as unknown as { bearing: number }).bearing, 0]
+      }
+    }
 
     // C1: decide's target carries only {id, kind} — resolve the actor from obs by id
     const targetMech = target?.kind === "mech" ? (obs.mechs.find((m) => m.id === target.id) ?? null) : null
@@ -335,6 +353,16 @@ export class Brain {
     } else if (this.actCtx?.forceReplan) {
       navOpts = { force: true }
     }
+    // var/move: never stand still — seeded random jink within 15 m of the intended goal,
+    // refreshed every 0.4-1.0 s; boosting when energy > 40. Applies to every state.
+    if (this.jinkUntil < obs.t) {
+      this.jinkUntil = obs.t + 0.4 + this.rng() * 0.6
+      const ang = this.rng() * Math.PI * 2
+      const rad = this.rng() * 15
+      this.jinkOffset = [Math.cos(ang) * rad, Math.sin(ang) * rad]
+    }
+    navGoal = [navGoal[0] + this.jinkOffset[0], navGoal[1] + this.jinkOffset[1]]
+    if (me.energy > 40 && primary !== "lightning") boost = true
     const nav = this.nav.update(pos2, navGoal, obs.t, navOpts)
     let move: Vec2 = nav.atGoal ? [0, 0] : [nav.dir[0], nav.dir[1]]
 
@@ -368,7 +396,8 @@ export class Brain {
         Math.abs(decision.aim[0] - me.aim[0]) > 1e-9 ||
         Math.abs(decision.aim[1] - me.aim[1]) > 1e-9)
     if (decideHasOpinion) a.aim = decision!.aim
-    else a.aim = strafeOf ? this.aimAt(pos, strafeOf.pos) : this.scanAim(obs)
+    else if (obs.t < this.faceUntil) a.aim = this.faceBearing
+    else a.aim = strafeOf ? this.aimAt(pos, strafeOf.pos) : this.situationalAim(obs)
 
     // opportunistic takes in the loot window (independent of the movement branch)
     if (obs.t < LOOT_WINDOW_S) {
@@ -429,6 +458,20 @@ export class Brain {
     const d = Math.max(0.001, Math.hypot(dx, dy))
     const eye = from[2] + (this.hello.config.mech.eye_height ?? 8)
     return [Math.atan2(dy, dx), Math.atan2(to[2] + 4.5 - eye, d)]
+  }
+
+  /**
+   * var/move idle aim: point the 120° view cone at the most recently tracked threat (<= 3 s)
+   * instead of sweeping; fall back to the sound-turn sweep when nobody is tracked.
+   */
+  private situationalAim(obs: Observation): Vec2 {
+    let last: { pos: Vec3; t: number } | null = null
+    for (const th of this.threats.values()) {
+      if (obs.t - th.t > 3) continue
+      if (!last || th.t > last.t) last = th
+    }
+    if (last) return this.aimAt(obs.self.pos, last.pos)
+    return this.scanAim(obs)
   }
 
   /** Newest heard weapon/step sound → turn to it; otherwise sweep ±90° around the zone-center bearing at ~1.5 rad/s. */
