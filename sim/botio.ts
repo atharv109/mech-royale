@@ -12,6 +12,7 @@ export type SubBot = {
   lastAction: Record<string, unknown>
   lastAnswerT: number // match time of last on-time answer
   exited: boolean
+  stderrText: string
 }
 
 const enc = new TextEncoder()
@@ -24,10 +25,24 @@ export async function spawnBot(cmd: string[], cwd: string | undefined, hello: He
     env: { ...process.env, ...env } as Record<string, string | undefined>,
     stdin: "pipe",
     stdout: "pipe",
-    stderr: "ignore",
+    stderr: "pipe",
   })
   const reader = proc.stdout.getReader() as ReadableStreamDefaultReader<Uint8Array>
-  const bot: SubBot = { proc,  buf: "", name: "bot", lastAction: {}, lastAnswerT: 0, exited: false }
+  const bot: SubBot = { proc,  buf: "", name: "bot", lastAction: {}, lastAnswerT: 0, exited: false, stderrText: "" }
+  // continuously drain stderr so it can never block the bot (and keep the last BOTSIG line)
+  {
+    const sr = (proc.stderr as unknown as ReadableStream<Uint8Array>).getReader()
+    void (async () => {
+      for (;;) {
+        try {
+          const { done, value } = await sr.read()
+          if (done) break
+          bot.stderrText += dec.decode(value)
+          if (bot.stderrText.length > 200000) bot.stderrText = bot.stderrText.slice(-100000)
+        } catch { break }
+      }
+    })()
+  }
   bot.reader = reader
   bot.proc.stdin!.write(enc.encode(JSON.stringify(hello) + "\n"))
   await bot.proc.stdin!.flush()
@@ -91,7 +106,22 @@ export function coastOf(last: Record<string, unknown> | null): Record<string, un
   return { move: last.move, boost: last.boost, aim: last.aim }
 }
 
-export async function endBot(b: SubBot, place: number, kills: number) {
+/** Drain stderr after stdin end and parse the last "BOTSIG {...}" line (bot-side counters). */
+export function botsigOf(b: SubBot): Record<string, unknown> | null {
+  const errTail = b.stderrText.split("\n").filter((l) => l && !l.startsWith("BOTSIG ")).slice(-12).join(" | ")
+  for (const line of b.stderrText.split("\n")) {
+    if (line.startsWith("BOTSIG ")) {
+      try {
+        const o = JSON.parse(line.slice(7).trim()) as Record<string, unknown>
+        if (errTail) o._err = errTail
+        return o
+      } catch { return null }
+    }
+  }
+  return null
+}
+
+export async function endBot(b: SubBot, place: number, kills: number): Promise<Record<string, unknown> | null> {
   try {
     b.proc.stdin!.write(enc.encode(JSON.stringify({ type: "end", place, kills }) + "\n"))
     await b.proc.stdin!.flush()
@@ -103,4 +133,8 @@ export async function endBot(b: SubBot, place: number, kills: number) {
     if (!b.exited) try { b.proc.kill() } catch {}
   }, 2000)
   void t
+  // give the exit hook a beat to flush BOTSIG onto stderr
+  const dl = Date.now() + 700
+  while (Date.now() < dl && !b.exited) await new Promise((r) => setTimeout(r, 50))
+  return botsigOf(b)
 }

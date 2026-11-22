@@ -38,6 +38,8 @@ export type BrainDeps = {
   /** contract: new StuckMonitor(now) */
   stuck?: (now: number) => StuckLike
   decide?: DecideFn
+  /** shared counters (bot.ts owns the BOTSIG emission) */
+  stats?: BrainStats
 }
 
 const LOOT_WINDOW_S = 150
@@ -139,6 +141,28 @@ function mulberry32(seed: number): () => number {
 
 const dist2d = (a: Vec3 | Vec2, b: Vec3 | Vec2) => Math.hypot(a[0] - b[0], a[1] - b[1])
 
+export type BrainStats = {
+  dodges: number
+  retreats: number
+  coverTicks: number
+  seen: Record<string, number>
+  seenDist: Record<string, number>
+  walked: number
+  took: Record<string, number>
+  fail: Record<string, number>
+}
+
+export const newBrainStats = (): BrainStats => ({
+  dodges: 0,
+  retreats: 0,
+  coverTicks: 0,
+  seen: {},
+  seenDist: {},
+  walked: 0,
+  took: {},
+  fail: {},
+})
+
 export class Brain {
   private readonly hello: Hello
   private readonly map: GameMap
@@ -153,6 +177,17 @@ export class Brain {
   private stuck: StuckLike | null = null
   private strafeSign: number
   private strafeFlipAt: number
+
+  /** Task 10 counters (filled by variant brains; diagnostics by every brain) */
+  readonly stats: BrainStats
+  private pkIds = new Set<number>()
+  /** sv/cover state: refusing bad fights */
+  private coverMode = false
+  private coverCell: Vec2 | null = null
+  private coverReseekT = -10
+  private dmgLog: { t: number; amt: number }[] = []
+  private lastAttacker: Vec3 | null = null
+  private lastAttackerT = -10
   /** fp/drones: recent damage by a mech (ms-window via obs.tick) */
   private lastMechHitTick = -9999
   private burstUntil = -1
@@ -174,6 +209,7 @@ export class Brain {
       lastDamaged: null,
       disengaging: false,
     }
+    this.stats = deps?.stats ?? newBrainStats()
   }
 
   /** act() deadline context, passed by bot.ts: elapsed wall time and a force-replan switch */
@@ -188,6 +224,19 @@ export class Brain {
     const live = zoneCircle(obs.zone, obs.t)
     const walkSpeed = me.stats.walk_speed || 11.7
     const pickupRadius = this.hello.config.loot.pickup_radius || 4
+
+    // Task 10 diagnostics: pickups seen once by id (with first-sight distance), take results
+    for (const p of obs.pickups) {
+      if (!this.pkIds.has(p.id)) {
+        this.pkIds.add(p.id)
+        this.stats.seen[p.kind] = (this.stats.seen[p.kind] ?? 0) + 1
+        this.stats.seenDist[p.kind] = (this.stats.seenDist[p.kind] ?? 0) + Math.round(dist2d(p.pos, pos2))
+      }
+    }
+    for (const ev of obs.events) {
+      if (ev.type === "take_failed") this.stats.fail[ev.reason] = (this.stats.fail[ev.reason] ?? 0) + 1
+      else if (ev.type === "took") this.stats.took[ev.kind] = (this.stats.took[ev.kind] ?? 0) + 1
+    }
 
     let enemy: ActorObs | null = null
     let enemyDist = Infinity
@@ -280,6 +329,55 @@ export class Brain {
       }
     }
 
+    // sv/cover: damage in the last 3 s, the last attacker position, and enemies with LOS to us
+    this.dmgLog = this.dmgLog.filter((e) => obs.t - e.t <= 3)
+    for (const ev of obs.events) {
+      if (ev.type === "damaged" && ev.bearing !== null) {
+        this.dmgLog.push({ t: obs.t, amt: ev.amount })
+        if (ev.by != null) {
+          const src = obs.mechs.find((m) => m.id === ev.by)
+          this.lastAttacker = src
+            ? ([...src.pos] as Vec3)
+            : ([pos[0] + Math.cos(ev.bearing) * 30, pos[1] + Math.sin(ev.bearing) * 30, pos[2]] as Vec3)
+          this.lastAttackerT = obs.t
+        }
+      }
+    }
+    const dmg3s = this.dmgLog.reduce((sum, e) => sum + e.amt, 0)
+    const eye = [pos[0], pos[1], pos[2] + (this.hello.config.mech.eye_height ?? 8)] as Vec3
+    const watchers: Vec3[] = []
+    for (const m of obs.mechs) {
+      if (m.kind !== "mech") continue
+      if (this.los(eye, m.pos)) watchers.push([...m.pos] as Vec3)
+    }
+
+
+    // a1. sv/cover — refuse bad fights: >=2 watchers, HP < 45%, or >300 dmg in 3 s puts us in a
+    // retreat state until HP >= 85%; movement goes to the nearest walkable cell with no LOS to
+    // any tracked enemy (zone safety still overrides — ladder a. already ran)
+    if (!this.coverMode) {
+      if (watchers.length >= 2 || me.hp < 0.45 * me.max_hp || dmg3s > 300) {
+        this.coverMode = true
+        this.stats.retreats++
+        this.coverCell = null
+        this.coverReseekT = -10
+      }
+    } else {
+      if (me.hp >= 0.85 * me.max_hp) this.coverMode = false
+    }
+    if (this.coverMode) this.stats.coverTicks++
+    if (this.coverMode && goal === null) {
+      const badCell =
+        this.coverCell === null ||
+        !feasible(this.map, this.coverCell[0]!, this.coverCell[1]!) ||
+        dist2d(this.coverCell, live.c) > live.r - 2
+      if (badCell || obs.t - this.coverReseekT > 2) {
+        this.coverCell = this.findCoverCell(pos2, watchers, live)
+        this.coverReseekT = obs.t
+      }
+      goal = this.coverCell ?? ([live.c[0], live.c[1]] as Vec2)
+    }
+
     // b. fight — decide() owns aim/fire; strafe the mech it targets (else the nearest) within 200 m.
     // fp/drones: in the first 75 s mechs are ignored unless they damage us.
     if (goal === null) {
@@ -317,6 +415,7 @@ export class Brain {
     if (goal === null && strafeOf === null && obs.t < LOOT_WINDOW_S) {
       const want = this.preferredPickup(obs.pickups, me.weapons, pos2, PICKUP_MAX_DIST)
       if (want && dist2d(want.pos, pos2) > pickupRadius) goal = [want.pos[0], want.pos[1]]
+      if (goal !== null) this.stats.walked++
     }
 
     // d. crates/NPCs — loot window, no mech visible: approach decide's crate/NPC target within 60 m
@@ -428,6 +527,10 @@ export class Brain {
     if (decideHasOpinion) a.aim = decision!.aim
     else a.aim = strafeOf ? this.aimAt(pos, strafeOf.pos) : this.scanAim(obs)
 
+    // sv/cover: while retreating, keep facing the last attacker
+    if (this.coverMode && this.lastAttacker && obs.t - this.lastAttackerT < 6)
+      a.aim = this.aimAt(pos, this.lastAttacker)
+
     // opportunistic takes in the loot window (independent of the movement branch)
     if (obs.t < LOOT_WINDOW_S) {
       const p = this.preferredPickup(obs.pickups, me.weapons, pos2, pickupRadius)
@@ -456,6 +559,36 @@ export class Brain {
       if (feasible(this.map, x, y)) return [x, y]
     }
     return [zone.next_center[0], zone.next_center[1]]
+  }
+
+  /**
+   * sv/cover: nearest walkable cell around us that no tracked enemy has LOS to, inside the
+   * live circle. Ring search outward (6..36 m), hard 3 ms cap; null -> caller falls back to
+   * the zone center.
+   */
+  private findCoverCell(pos2: Vec2, enemies: Vec3[], live: { c: Vec2; r: number }): Vec2 | null {
+    const t0 = performance.now()
+    for (let ring = 6; ring <= 36; ring += 6) {
+      for (let k = 0; k < 12; k++) {
+        if (k % 3 === 0 && performance.now() - t0 > 3) return null
+        const ang = (k / 12) * Math.PI * 2
+        const x = pos2[0] + Math.cos(ang) * ring
+        const y = pos2[1] + Math.sin(ang) * ring
+        const cd: Vec3 = [x, y, 6]
+        if (dist2d(cd, live.c) > live.r - 5) continue
+        if (!feasible(this.map, x, y)) continue
+        let blocked = false
+        for (const e of enemies) {
+          const ez: Vec3 = [e[0], e[1], e[2] + (this.hello.config.mech.eye_height ?? 8)]
+          if (this.los(cd, ez)) {
+            blocked = true
+            break
+          }
+        }
+        if (!blocked) return [x, y]
+      }
+    }
+    return null
   }
 
   /** Highest-ranked pickup within maxDist that passes takePlan; nearest wins a rank tie. */
