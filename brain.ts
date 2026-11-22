@@ -38,6 +38,8 @@ export type BrainDeps = {
   /** contract: new StuckMonitor(now) */
   stuck?: (now: number) => StuckLike
   decide?: DecideFn
+  /** shared counters (bot.ts owns the BOTSIG emission) */
+  stats?: BrainStats
 }
 
 const LOOT_WINDOW_S = 150
@@ -62,9 +64,9 @@ const RANGE_BANDS: Record<string, [number, number]> = {
 const UPGRADE_PRIORITY = [
   "plating",
   "armor",
+  "nanites",
   "gun_rate",
   "gun_damage",
-  "nanites",
   "laser_damage",
   "laser_charge",
   "lightning_efficiency",
@@ -139,6 +141,28 @@ function mulberry32(seed: number): () => number {
 
 const dist2d = (a: Vec3 | Vec2, b: Vec3 | Vec2) => Math.hypot(a[0] - b[0], a[1] - b[1])
 
+export type BrainStats = {
+  dodges: number
+  retreats: number
+  coverTicks: number
+  seen: Record<string, number>
+  seenDist: Record<string, number>
+  walked: number
+  took: Record<string, number>
+  fail: Record<string, number>
+}
+
+export const newBrainStats = (): BrainStats => ({
+  dodges: 0,
+  retreats: 0,
+  coverTicks: 0,
+  seen: {},
+  seenDist: {},
+  walked: 0,
+  took: {},
+  fail: {},
+})
+
 export class Brain {
   private readonly hello: Hello
   private readonly map: GameMap
@@ -153,6 +177,9 @@ export class Brain {
   private stuck: StuckLike | null = null
   private strafeSign: number
   private strafeFlipAt: number
+  /** Task 10 counters (filled by variant brains; diagnostics by every brain) */
+  readonly stats: BrainStats
+  private pkIds = new Set<number>()
   /** fp/drones: recent damage by a mech (ms-window via obs.tick) */
   private lastMechHitTick = -9999
   private burstUntil = -1
@@ -174,6 +201,7 @@ export class Brain {
       lastDamaged: null,
       disengaging: false,
     }
+    this.stats = deps?.stats ?? newBrainStats()
   }
 
   /** act() deadline context, passed by bot.ts: elapsed wall time and a force-replan switch */
@@ -188,6 +216,19 @@ export class Brain {
     const live = zoneCircle(obs.zone, obs.t)
     const walkSpeed = me.stats.walk_speed || 11.7
     const pickupRadius = this.hello.config.loot.pickup_radius || 4
+
+    // Task 10 diagnostics: pickups seen once by id (with first-sight distance), take results
+    for (const p of obs.pickups) {
+      if (!this.pkIds.has(p.id)) {
+        this.pkIds.add(p.id)
+        this.stats.seen[p.kind] = (this.stats.seen[p.kind] ?? 0) + 1
+        this.stats.seenDist[p.kind] = (this.stats.seenDist[p.kind] ?? 0) + Math.round(dist2d(p.pos, pos2))
+      }
+    }
+    for (const ev of obs.events) {
+      if (ev.type === "take_failed") this.stats.fail[ev.reason] = (this.stats.fail[ev.reason] ?? 0) + 1
+      else if (ev.type === "took") this.stats.took[ev.kind] = (this.stats.took[ev.kind] ?? 0) + 1
+    }
 
     let enemy: ActorObs | null = null
     let enemyDist = Infinity
@@ -317,6 +358,7 @@ export class Brain {
     if (goal === null && strafeOf === null && obs.t < LOOT_WINDOW_S) {
       const want = this.preferredPickup(obs.pickups, me.weapons, pos2, PICKUP_MAX_DIST)
       if (want && dist2d(want.pos, pos2) > pickupRadius) goal = [want.pos[0], want.pos[1]]
+      if (goal !== null) this.stats.walked++
     }
 
     // d. crates/NPCs — loot window, no mech visible: approach decide's crate/NPC target within 60 m

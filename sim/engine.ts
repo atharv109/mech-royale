@@ -1003,6 +1003,28 @@ export class Engine {
         mx.sigSpecialsAt90 = m.weapons.filter((w) => w && w.kind !== "gun").length
       }
     }
+    // ec: t=150s cube snapshot
+    if (this.t < 150 && this.t + dt >= 150) {
+      for (const m of this.mechs) {
+        const mx = m as unknown as { sigCubesAt150?: number }
+        mx.sigCubesAt150 = m.cubes
+      }
+    }
+    // Task 10 instrumentation: fraction of steps where no enemy mech sees the focus
+    // canSee includes range+fov+LOS from the enemy's side == "enemy can see us"
+    if (this.mechs[0]?.alive) {
+      const me = this.mechs[0]!
+      const self: { sigSteps: number; sigCoverSteps: number } = this as unknown as { sigSteps: number; sigCoverSteps: number }
+      self.sigSteps = (self.sigSteps ?? 0) + 1
+      let seen = false
+      for (let i = 1; i < this.mechs.length; i++) {
+        const e = this.mechs[i]!
+        if (!e.alive) continue
+        if (dist2d(e.pos, me.pos) > this.cfg.vision.range + 2) continue
+        if (this.canSee(e, me.pos, me.pos[2]! + 4.5)) { seen = true; break }
+      }
+      if (!seen) self.sigCoverSteps = (self.sigCoverSteps ?? 0) + 1
+    }
     this.t += dt
     this.tick++
     // zone timeline
@@ -1173,6 +1195,7 @@ export class Engine {
       sigCrates: this.sigCrates,
       sigDrones: this.sigDrones,
       sigDrops: this.sigDrops,
+      sigCoverFrac: this.sigSteps ? this.sigCoverSteps / this.sigSteps : 1,
       projHits: this.projHits,
       projWalls: this.projWalls,
       hitVictims: this.hitVictims,
@@ -1191,6 +1214,7 @@ export class Engine {
             hp: Math.round(f.hp),
             survived: f.alive,
             sigCubesAt90: (f as unknown as { sigCubesAt90?: number }).sigCubesAt90 ?? 0,
+            sigCubesAt150: (f as unknown as { sigCubesAt150?: number }).sigCubesAt150 ?? 0,
             sigSpecialsAt90: (f as unknown as { sigSpecialsAt90?: number }).sigSpecialsAt90 ?? 0,
           }
         : null,
