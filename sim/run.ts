@@ -186,6 +186,7 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
     sigCubesAt90: (f as unknown as { sigCubesAt90?: number }).sigCubesAt90 ?? 0,
     sigSpecialsAt90: (f as unknown as { sigSpecialsAt90?: number }).sigSpecialsAt90 ?? 0,
     sigCrates: (res as unknown as { sigCrates?: number }).sigCrates ?? 0,
+    sigCubesCollected: (res as unknown as { sigCubesCollected?: number }).sigCubesCollected ?? 0,
     sigDrones: (res as unknown as { sigDrones?: number }).sigDrones ?? 0,
     sigDrops: (res as unknown as { sigDrops?: number }).sigDrops ?? 0,
     winnerName: winner,

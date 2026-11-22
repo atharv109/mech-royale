@@ -173,6 +173,7 @@ export class Engine {
   names: string[] = []
   shotsByHouse = 0
   sigCrates = 0
+  sigCubesCollected = 0
   sigDrones = 0
   sigDrops = 0
   shotsByFocus = 0
@@ -1097,6 +1098,7 @@ export class Engine {
         const cb = this.cubes[k]!
         if (dist2d(cb.pos, m.pos) <= this.cfg.cubes.pickup_radius && Math.abs(cb.pos[2]! - m.pos[2]!) < 4) {
           this.cubes.splice(k, 1)
+          if (m.id === 0) this.sigCubesCollected++
           this.grantCubes(m, 1)
           m.events.push({ type: "pickup", cubes: m.cubes })
         }
@@ -1163,6 +1165,7 @@ export class Engine {
       shotsByHouse: this.shotsByHouse,
       shotsByFocus: this.shotsByFocus,
       sigCrates: this.sigCrates,
+      sigCubesCollected: this.sigCubesCollected,
       sigDrones: this.sigDrones,
       sigDrops: this.sigDrops,
       projHits: this.projHits,
