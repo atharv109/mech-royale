@@ -58,14 +58,15 @@ const RANGE_BANDS: Record<string, [number, number]> = {
   mortar: [60, 150],
 }
 /** §10 priority order — first offer choice whose id CONTAINS the token wins. */
+// fp/drops: plating > armor > gun_rate > gun_damage > nanites > rest
 const UPGRADE_PRIORITY = [
   "plating",
   "armor",
+  "gun_rate",
+  "gun_damage",
   "nanites",
   "laser_damage",
   "laser_charge",
-  "gun_rate",
-  "gun_damage",
   "lightning_efficiency",
   "gyros",
   "servos",
@@ -228,6 +229,29 @@ export class Brain {
       if (dNext > 0 && tToStart <= dNext / walkSpeed + 10) goal = this.prePositionPoint(pos2, obs.zone)
     }
 
+    // a2. fp/drops: a called drop is the top priority — pre-position at its landing spot even
+    // before it lands, stand in the ring; fight any enemy that shows up in the ring.
+    {
+      let dr: Observation["drops"][number] | null = null
+      let drD = Infinity
+      for (const d of obs.drops) {
+        if (dist2d(d.pos, live.c) > live.r - 5) continue
+        const dd = dist2d(d.pos, pos2) + (d.lands_in > 0 ? 30 : 0) // landed drops win ties
+        if (dd < drD) { drD = dd; dr = d }
+      }
+      if (dr) {
+        const ringIn = dist2d(dr.pos, pos2) <= (dr.radius || 8) + 2
+        if (!ringIn) {
+          goal = [dr.pos[0], dr.pos[1]]
+          boost = true
+        } else {
+          // in the ring: hold the ring center so the sole-capture keeps progressing while we
+          // shoot whoever shows up (decide aims/fires; movement stays on the ring center)
+          goal = [dr.pos[0], dr.pos[1]]
+        }
+      }
+    }
+
     // b. fight — decide() owns aim/fire; strafe the mech it targets (else the nearest) within 200 m
     if (goal === null) {
       if (targetMech && dist2d(targetMech.pos, pos2) <= 200) strafeOf = targetMech
@@ -236,18 +260,6 @@ export class Brain {
     // M5: disengage against the same mech we strafe
     const disengaging = strafeOf !== null && me.hp < 0.3 * me.max_hp && (strafeOf.hp ?? 0) > me.hp
     this.combat.disengaging = disengaging
-
-    // e. supply drops (M6: before heal — capture restores full HP) — landed, in the live zone, uncontested
-    if (goal === null && strafeOf === null) {
-      for (const dr of obs.drops) {
-        if (dr.lands_in > 0) continue
-        if (dist2d(dr.pos, pos2) > 150) continue
-        if (dist2d(dr.pos, live.c) > live.r) continue
-        if (obs.mechs.some((m) => dist2d(m.pos, dr.pos) < 60)) continue
-        goal = dist2d(dr.pos, pos2) <= (dr.radius || 8) ? pos2 : [dr.pos[0], dr.pos[1]]
-        break
-      }
-    }
 
     // c. heal — stand still with no mech visible at all (M4); 5 s without dealing damage starts regen
     if (goal === null && strafeOf === null && enemy === null && me.hp < 0.7 * me.max_hp) {
