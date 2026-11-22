@@ -459,11 +459,12 @@ class Brain {
           }
         }
         // NPC drones: walk into gun range of the nearest remembered one
-        // x/r1ver-ours: farm through the whole match whenever no mech is visible (no HP gate)
-        if (true) {
+        // x/r1 farm: no mech visible, up to 200 m, inside the next circle
+        if (visible.length === 0) {
           for (const nm of this.npcMem.values()) {
             const d = hyp2(x, y, nm.pos[0], nm.pos[1])
-            if (d > 170) continue
+            if (d > 200) continue
+            if (hyp2(nm.pos[0], nm.pos[1], zn.next_center[0], zn.next_center[1]) > zn.next_radius) continue
             const sc = d - 20
             if (sc < bs) {
               bs = sc
@@ -471,12 +472,13 @@ class Brain {
             }
           }
         }
-        // crates on the ground: walk into range and break them
-        if (true) {
+        // crates: walk into range and break them
+        // x/r1 farm: rooftop crates too (reachable with jets), no mech visible, inside next circle
+        if (visible.length === 0) {
           for (const c of o.crates) {
-            if (Math.abs(c.pos[2] - this.mapGround(c.pos[0], c.pos[1])) > 2) continue
             const d = hyp2(x, y, c.pos[0], c.pos[1])
             if (d > 150) continue
+            if (hyp2(c.pos[0], c.pos[1], zn.next_center[0], zn.next_center[1]) > zn.next_radius) continue
             const sc = d + 5
             if (sc < bs) {
               bs = sc
