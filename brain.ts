@@ -259,7 +259,7 @@ export class Brain {
     // fp/drones: in the first 75 s ignore mechs unless one is damaging us — hand decide() a
     // mech-filtered obs so its target/aim/fire go to drones and crates only.
     let pveObs = obs
-    if (obs.t < 75 && obs.tick - this.lastMechHitTick > 50) {
+    if (obs.t < 75 && !obs.mechs.some((m) => m.kind === "mech") && obs.tick - this.lastMechHitTick > 50) {
       pveObs = { ...obs, mechs: obs.mechs.filter((m) => m.kind !== "mech") } as Observation
     }
     const decision = this.decideFn(pveObs, this.combat, { los: this.los })
