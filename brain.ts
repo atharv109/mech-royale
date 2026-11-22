@@ -252,7 +252,7 @@ export class Brain {
     // fp/drones: in the first 75 s ignore mechs unless one is damaging us — hand decide() a
     // mech-filtered obs so its target/aim/fire go to drones and crates only.
     let pveObs = obs
-    if (obs.t < 75 && obs.tick - this.lastMechHitTick > 50) {
+    if (enemy === null && obs.tick - this.lastMechHitTick > 50) {
       pveObs = { ...obs, mechs: obs.mechs.filter((m) => m.kind !== "mech") } as Observation
     }
     const decision = this.decideFn(pveObs, this.combat, { los: this.los })
@@ -377,16 +377,18 @@ export class Brain {
     }
 
     // d0. fp/drones: first 75 s — chase the nearest npc/crate within 150 m unless being shot by a mech
-    if (goal === null && obs.t < 75 && obs.tick - this.lastMechHitTick > 50) {
+    if (goal === null && enemy === null && obs.tick - this.lastMechHitTick > 50) {
       let pv: { pos: Vec3; d: number } | null = null
       let pvd = Infinity
       for (const m of obs.mechs) {
         if (m.kind !== "npc") continue
+        if (dist2d(m.pos, obs.zone.next_center) > obs.zone.next_radius - 5) continue
         const d = dist2d(m.pos, pos2)
         if (d < pvd) { pvd = d; pv = { pos: m.pos, d } }
       }
       for (const c of obs.crates) {
         const d = dist2d(c.pos, pos2)
+        if (dist2d(c.pos, obs.zone.next_center) > obs.zone.next_radius - 5) continue
         if (d < pvd) { pvd = d; pv = { pos: c.pos, d } }
       }
       if (pv && pvd <= 150) goal = [pv.pos[0], pv.pos[1]]
