@@ -103,6 +103,10 @@ async function trial(cond: Cond, seedN: number) {
       eng.applyAction(tgt, { move: [Math.cos(perp) * sdir, Math.sin(perp) * sdir] })
     }
     const obs = eng.buildObs(me)
+    // Task 13: the base brain ignores mechs for its first 75 s; shift the observed clock so
+    // the range exercises the combat layer (engine time stays real, drops never interfere)
+    obs.t = (obs.t as number) + 80
+    obs.tick = (obs.tick as number) + 1600
     const hasTarget = obs.mechs.some((m) => m.id === 1)
     if (hasTarget) visibleDecisions++
     const wPre = me.weapons[0]

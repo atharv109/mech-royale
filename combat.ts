@@ -17,6 +17,9 @@ export interface CombatState {
   lastDamaged: { bearing: number; tObsTick: number; byId: number | null } | null
   /** internal: tick when the laser was first seen at full charge (hold_s auto-release) */
   laserFullTick?: number | null
+  /** cb/trigger: obs.tick until which the gun/lightning trigger must stay held */
+  gunHot?: number | null
+  lightHot?: number | null
 }
 
 export interface CombatDecision {
@@ -212,17 +215,24 @@ export function decide(obs: Observation, state: CombatState, deps: { los: (a: Ve
     }
   }
 
-  // torso ownership: mortar lob when active; laser aims straight at the target (hitscan, no lead);
-  // otherwise the gun's lead solution
+  // cb/aim: a laser release is imminent once the charge passes 90% of its cap
+  const laserImminent =
+    special?.kind === "laser" && (special.charge ?? 0) >= 0.9 * (special.stats.charge ?? 0.75)
+
+  // torso ownership: mortar lob when active; the laser (hitscan, no lead) takes the torso only
+  // when a release is imminent -- until then the gun's lead solution keeps the gun firing;
+  // without a lead solution the direct line is all we have
   let aim: [number, number]
   if (lob) aim = lob
-  else if (special?.kind === "laser" || !sol) aim = [directYaw, directPitch]
+  else if (special?.kind === "laser") {
+    aim = !sol || laserImminent ? [directYaw, directPitch] : [sol.yaw, sol.pitch]
+  } else if (!sol) aim = [directYaw, directPitch]
   else aim = [sol.yaw, sol.pitch]
 
   // gun (slot 0): fire when the actual aim is on the lead solution (yaw and pitch) and the line is
   // clear; never while the mortar owns the torso (bullets would fly along the lob)
   let gunFire = false
-  if (gun && sol && !lob) {
+  if (gun && sol && !lob && !laserImminent) {
     const yawErr = Math.abs(normAngle(self.aim[0] - sol.yaw))
     const pitchErr = Math.abs(self.aim[1] - sol.pitch)
     if (yawErr <= Math.atan(radius / horiz) && pitchErr <= Math.atan(centerHeight / horiz)) {
@@ -242,7 +252,9 @@ export function decide(obs: Observation, state: CombatState, deps: { los: (a: Ve
     const chargeStat = special.stats.charge ?? 0.75
     const holdS = special.stats.hold_s ?? 2
     const charge = special.charge ?? 0
-    const aimOk = Math.abs(normAngle(self.aim[0] - directYaw)) <= Math.atan(radius / horiz)
+    const aimOk =
+      Math.abs(normAngle(self.aim[0] - directYaw)) <= Math.atan(radius / horiz) &&
+      Math.abs(self.aim[1] - directPitch) <= Math.atan(centerHeight / horiz)
     let release = charge >= 0.95 * chargeStat && aimOk && deps.los(muzzle, center)
     if (charge >= chargeStat - 1e-9) {
       // charge caps at `charge` (protocol §7), so time at full charge must be counted in ticks;
