@@ -25,7 +25,7 @@ export async function spawnBot(cmd: string[], cwd: string | undefined, hello: He
     env: { ...process.env, ...env } as Record<string, string | undefined>,
     stdin: "pipe",
     stdout: "pipe",
-    stderr: "piped",
+    stderr: "pipe",
   })
   const reader = proc.stdout.getReader() as ReadableStreamDefaultReader<Uint8Array>
   const bot: SubBot = { proc,  buf: "", name: "bot", lastAction: {}, lastAnswerT: 0, exited: false, stderrText: "" }

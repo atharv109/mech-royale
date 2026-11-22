@@ -115,6 +115,7 @@ export async function runMatch(
   if (sub) {
     const f = res.placements.find((p) => p.id === 0)
     bsig = await endBot(sub, f?.place ?? 16, f?.kills ?? 0)
+    ;(res as unknown as { botSig?: unknown }).botSig = bsig
   }
   if (opts.replayPath) writeFileSync(opts.replayPath, JSON.stringify(replayFile(eng)), null)
   void t0
@@ -162,6 +163,7 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
   const botName = testBot.cmd ? testBot.cmd.join(" ") : "in-process"
   const ms0 = performance.now()
   const res = await runMatch(map, seed, testBot, { quiet, replayPath: matchesDone < replays ? join(dir, `m-${seed}.json`) : undefined })
+  const bsig = (res as unknown as { botSig?: Record<string, unknown> | null }).botSig ?? null
   const ms = Math.round(performance.now() - ms0)
   const f = res.focus
   if (!f) throw new Error("no focus")
@@ -196,6 +198,7 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
     botRetreats: typeof bsig?.retreats === "number" ? bsig.retreats : 0,
     botMaxActMs: typeof bsig?.maxActMs === "number" ? Math.round(bsig.maxActMs * 100) / 100 : 0,
     botSeen: bsig?.seen ?? {},
+    botSeenDist: bsig?.seenDist ?? {},
     botFail: bsig?.fail ?? {},
     botTook: bsig?.took ?? {},
     botWalked: typeof bsig?.walked === "number" ? bsig.walked : 0,
