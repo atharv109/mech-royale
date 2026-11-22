@@ -175,7 +175,6 @@ export class Engine {
   projHits = 0
   hitVictims: Record<number, number> = {}
   visRows: Record<number, number> = {}
-  houseFireDist: number[] = []
   projWalls = 0
   bounds = { minX: 0, maxX: 0, minY: 0, maxY: 0 }
   phaseStart = new Map<number, { cx: number; cy: number; r: number }>()
@@ -541,13 +540,7 @@ export class Engine {
     const pitch = m.aim[1] + gauss(this.rng) * s
     const cp = Math.cos(pitch)
     const v: Vec3 = [cp * Math.cos(yaw) * st.speed!, cp * Math.sin(yaw) * st.speed!, Math.sin(pitch) * st.speed!]
-    if (m.id !== 0) {
-      this.shotsByHouse++
-      const d0 = Math.hypot(m.pos[0] - this.mechs[0]!.pos[0], m.pos[1] - this.mechs[0]!.pos[1])
-      this.houseFireDist.push(d0)
-      if (this.shotsByHouse <= 5 || (this.shotsByHouse > 100 && this.shotsByHouse <= 105))
-        console.error(`houseShot by ${m.id} pos ${m.pos.map((v) => v.toFixed(0))} aim ${m.aim.map((v) => v.toFixed(2))} d0 ${d0.toFixed(0)} focus0 ${this.mechs[0].pos.map((v) => v.toFixed(0))}`)
-    }
+    if (m.id !== 0) this.shotsByHouse++
     this.projs.push({ id: this.nextId++, kind, ownerId: m.id, pos: o, vel: v, bornT: this.t, maxT: this.t + (st.range ?? 230) / st.speed! })
     this.sounds.push({ srcId: m.id, kind, x: o[0], y: o[1], t: this.t })
   }
@@ -726,6 +719,7 @@ export class Engine {
     victim.lastHitBy = { id: info.byId, weapon: isZone ? "zone" : info.weapon }
     if (victim.hp <= 0 && victim.alive) {
       victim.alive = false
+      ;(victim as unknown as { aliveAtDeath: number }).aliveAtDeath = this.mechs.filter((z) => z.alive).length + 1
       victim.deathT = this.t
       victim.deathCause = { by: info.byId, weapon: info.weapon }
       victim.deathPos = [...victim.pos] as Vec3
@@ -1162,7 +1156,6 @@ export class Engine {
       projWalls: this.projWalls,
       hitVictims: this.hitVictims,
       visRows: this.visRows,
-      houseFireDist: this.houseFireDist,
       duration: Math.round(this.t * 10) / 10,
       placements,
       deaths: this.deaths,
@@ -1173,6 +1166,8 @@ export class Engine {
             dmgTaken: Object.fromEntries(Object.entries(f.dmgTaken).map(([k, v]) => [k, Math.round(v)])),
             dmgTakenFront: Math.round(f.dmgTakenFront), dmgTakenRear: Math.round(f.dmgTakenRear), dmgDealt: Math.round(f.dmgDealt),
             kills: f.kills, cubes: f.cubes, inZoneAtDeath: f.alive ? true : this.deaths.find((d) => d.mechId === f.id)?.inZoneAtDeath ?? false,
+            aliveAtDeath: (f as unknown as { aliveAtDeath?: number }).aliveAtDeath ?? 1,
+            hp: Math.round(f.hp),
             survived: f.alive,
           }
         : null,

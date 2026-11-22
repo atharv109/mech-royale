@@ -1,0 +1,104 @@
+seed 1: score 0 place 16 died 12s gun(by 11) kills 0
+seed 2: score 3 place 13 died 93s gun(by 14) kills 2
+seed 3: score 0 place 16 died 26s gun(by 15) kills 0
+seed 4: score 13 place 3 died 273s zone kills 6
+seed 5: score 1 place 15 died 142s zone kills 0
+seed 6: score 1 place 15 died 77s gun(by 5) kills 1
+seed 7: score 1 place 15 died 201s zone kills 0
+seed 8: score 4 place 12 died 211s zone kills 0
+seed 9: score 0 place 16 died 37s gun(by 12) kills 0
+seed 10: score 0 place 16 died 143s zone kills 0
+seed 11: score 0 place 16 died 11s laser(by 1) kills 0
+seed 12: score 0 place 16 died 16s gun(by 4) kills 0
+seed 13: score 6 place 10 died 182s laser(by 14) kills 5
+seed 14: score 5 place 11 died 202s zone kills 2
+seed 15: score 15 place 1 died survived  kills 6
+seed 16: score 1 place 15 died 149s zone kills 0
+seed 17: score 7 place 9 died 256s zone kills 0
+seed 18: score 15 place 1 died survived  kills 3
+seed 19: score 10 place 6 died 268s zone kills 3
+seed 20: score 1 place 15 died 28s gun(by 14) kills 1
+seed 21: score 0 place 16 died 94s laser(by 2) kills 0
+seed 22: score 4 place 12 died 196s gun(by 3) kills 4
+seed 23: score 4 place 12 died 211s zone kills 0
+seed 24: score 15 place 1 died survived  kills 6
+seed 25: score 6 place 10 died 204s zone kills 0
+seed 26: score 3 place 13 died 207s zone kills 0
+seed 27: score 8 place 8 died 174s laser(by 7) kills 1
+seed 28: score 1 place 15 died 40s gun(by 3) kills 1
+seed 29: score 3 place 13 died 137s gun(by 15) kills 3
+seed 30: score 0 place 16 died 57s mortar(by 14) kills 0
+seed 31: score 0 place 16 died 13s lightning(by 4) kills 0
+seed 32: score 0 place 16 died 18s laser(by 9) kills 0
+seed 33: score 15 place 1 died survived  kills 8
+seed 34: score 1 place 15 died 21s laser(by 7) kills 1
+seed 35: score 1 place 15 died 144s zone kills 0
+seed 36: score 11 place 5 died 207s zone kills 2
+seed 37: score 0 place 16 died 117s gun(by 6) kills 0
+seed 38: score 0 place 16 died 61s gun(by 4) kills 0
+seed 39: score 0 place 16 died 22s gun(by 15) kills 0
+seed 40: score 0 place 16 died 14s gun(by 2) kills 0
+seed 41: score 0 place 16 died 10s laser(by 1) kills 0
+seed 42: score 0 place 16 died 11s gun(by 6) kills 0
+seed 43: score 1 place 15 died 29s gun(by 5) kills 1
+seed 44: score 0 place 16 died 14s laser(by 15) kills 0
+seed 45: score 1 place 15 died 146s zone kills 1
+seed 46: score 0 place 16 died 109s laser(by 12) kills 0
+seed 47: score 1 place 15 died 152s zone kills 0
+seed 48: score 0 place 16 died 55s laser(by 6) kills 0
+seed 49: score 2 place 14 died 146s laser(by 6) kills 1
+seed 50: score 0 place 16 died 17s laser(by 1) kills 0
+seed 51: score 2 place 14 died 69s gun(by 12) kills 2
+seed 52: score 0 place 16 died 25s gun(by 3) kills 0
+seed 53: score 0 place 16 died 13s laser(by 7) kills 0
+seed 54: score 14 place 2 died 323s zone kills 4
+seed 55: score 1 place 15 died 18s laser(by 5) kills 0
+seed 56: score 0 place 16 died 21s gun(by 4) kills 0
+seed 57: score 0 place 16 died 10s laser(by 15) kills 0
+seed 58: score 12 place 4 died 273s zone kills 6
+seed 59: score 0 place 16 died 125s gun(by 7) kills 0
+seed 60: score 0 place 16 died 21s laser(by 8) kills 0
+seed 61: score 0 place 16 died 18s mortar(by 5) kills 0
+seed 62: score 1 place 15 died 48s gun(by 15) kills 1
+seed 63: score 7 place 9 died 212s zone kills 3
+seed 64: score 2 place 14 died 57s gun(by 4) kills 2
+seed 65: score 5 place 11 died 179s mortar(by 9) kills 3
+seed 66: score 1 place 15 died 137s gun(by 7) kills 0
+seed 67: score 3 place 13 died 215s zone kills 1
+seed 68: score 0 place 16 died 17s gun(by 14) kills 0
+seed 69: score 1 place 15 died 120s gun(by 3) kills 1
+seed 70: score 0 place 16 died 15s gun(by 7) kills 0
+seed 71: score 5 place 11 died 202s zone kills 0
+seed 72: score 1 place 15 died 29s mortar(by 8) kills 1
+seed 73: score 7 place 9 died 196s gun(by 10) kills 2
+seed 74: score 9 place 7 died 233s laser(by 12) kills 3
+seed 75: score 0 place 16 died 21s gun(by 10) kills 0
+seed 76: score 0 place 16 died 35s gun(by 4) kills 0
+seed 77: score 0 place 16 died 20s laser(by 14) kills 0
+seed 78: score 1 place 15 died 23s gun(by 2) kills 1
+seed 79: score 1 place 15 died 199s zone kills 1
+seed 80: score 15 place 1 died survived  kills 9
+seed 81: score 0 place 16 died 12s mortar(by 3) kills 0
+seed 82: score 10 place 6 died 266s zone kills 2
+seed 83: score 0 place 16 died 19s gun(by 11) kills 0
+seed 84: score 10 place 6 died 278s zone kills 3
+seed 85: score 2 place 14 died 213s zone kills 0
+seed 86: score 0 place 16 died 73s laser(by 15) kills 0
+seed 87: score 9 place 7 died 259s zone kills 3
+seed 88: score 6 place 10 died 145s laser(by 9) kills 4
+seed 89: score 1 place 15 died 36s gun(by 15) kills 0
+seed 90: score 0 place 16 died 18s gun(by 6) kills 0
+seed 91: score 0 place 16 died 133s zone kills 0
+seed 92: score 0 place 16 died 7s laser(by 12) kills 0
+seed 93: score 1 place 15 died 23s gun(by 15) kills 0
+seed 94: score 5 place 11 died 201s zone kills 1
+seed 95: score 0 place 16 died 9s gun(by 12) kills 0
+seed 96: score 0 place 16 died 6s laser(by 13) kills 0
+
+== summary ==
+matches 96 | mean score 3.04 | survived 5/96 | median death 73s of 480s
+death causes: gun 35, zone 28, laser 22, survived 5, mortar 5, lightning 1
+damage taken by weapon: gun 96469, zone 43211, laser 32967, mortar 14331, lightning 2936
+front/rear total: 103732 / 42970 (rear 29%)
+
+96 matches in 405.7 s (4.2 s/match, jobs 20)

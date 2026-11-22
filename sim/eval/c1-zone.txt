@@ -1,0 +1,8 @@
+
+== summary ==
+matches 96 | mean score 2.79 | survived 5/96 | median death 63s of 480s
+death causes: gun 42, zone 26, laser 17, mortar 6, survived 5
+damage taken by weapon: gun 99968, zone 39504, laser 29684, mortar 13374, lightning 2327
+front/rear total: 108933 / 36420 (rear 25%)
+
+96 matches in 240.7 s (2.5 s/match, jobs 20)

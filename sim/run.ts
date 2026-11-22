@@ -137,7 +137,7 @@ function worldPrisms(): unknown {
 
 // ---------- driver ----------
 
-type MatchRow = {  houseShots?: number
+type MatchRow = {
 
   seed: number
   score: number
@@ -152,6 +152,8 @@ type MatchRow = {  houseShots?: number
   survived: boolean
   duration: number
   ms: number
+  aliveAtDeath: number
+  hp: number
   winnerName?: string
 }
 
@@ -164,9 +166,7 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
   if (!f) throw new Error("no focus")
   const winner = res.placements[0]?.name
   const wep = Math.round((f.dmgTaken.gun ?? 0) + (f.dmgTaken.laser ?? 0) + (f.dmgTaken.lightning ?? 0) + (f.dmgTaken.mortar ?? 0))
-  const st = res as unknown as { shotsByHouse: number; projHits: number; projWalls: number; hitVictims: Record<number, number>; houseFireDist: number[]; visRows: Record<number, number> }
-  const fda = st.houseFireDist.length ? Math.round(st.houseFireDist.reduce((s, x) => s + x, 0) / st.houseFireDist.length) : -1
-  if (!quiet) console.log(`seed ${seed}: score ${f.score} place ${f.place} diedAt ${f.deathT ?? "-"}s ${f.cause?.weapon ?? "survived"}(${wep} wep dmg, ${f.dmgTakenFront ?? 0}F/${f.dmgTakenRear ?? 0}R) ${ms}ms houseShots ${st.shotsByHouse} hits ${st.projHits} walls ${st.projWalls} victims ${JSON.stringify(st.hitVictims)} fireAvg ${fda} vis0=${st.visRows?.[0] ?? "?"} visOther=${Object.keys(st.visRows ?? {}).filter((k) => k !== "0").reduce((s, k) => s + (st.visRows?.[Number(k)] ?? 0), 0)}`)
+  if (!quiet) console.log(`seed ${seed}: score ${f.score} place ${f.place} ${f.survived ? "survived" : `died ${(f.deathT ?? 0).toFixed(0)}s ${f.cause?.weapon ?? "?"}${f.cause?.by !== null && f.cause?.by !== undefined ? `(by ${f.cause.by})` : ""}`} alive@death ${f.aliveAtDeath ?? 1} hp-left ${Math.round(f.hp)} ${ms}ms`)
   return {
     seed,
     score: f.score,
@@ -181,6 +181,8 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
     survived: f.survived,
     duration: res.duration,
     ms,
+    aliveAtDeath: (f as unknown as { aliveAtDeath?: number }).aliveAtDeath ?? 1,
+    hp: (f as unknown as { hp?: number }).hp ?? 0,
     winnerName: winner,
   }
 }
@@ -276,9 +278,7 @@ async function main() {
   }
   const totalMs = Math.round(performance.now() - t0)
   // per-match table
-  if (!quiet) for (const r of allRows.sort((x, y) => x.seed - y.seed)) {
-    console.log(`seed ${r.seed}: score ${r.score} place ${r.place} died ${r.deathT === null ? "survived" : `${r.deathT.toFixed(0)}s`} ${r.cause ? (r.cause.weapon === "zone" ? "zone" : `${r.cause.weapon}${r.cause.by !== null ? `(by ${r.cause.by})` : ""}`) : ""} kills ${r.kills}`)
-  }
+  for (const r of allRows.sort((x, y) => x.seed - y.seed)) console.log("ROW " + JSON.stringify(r))
   console.log("\n== summary ==")
   console.log(summary(allRows))
   console.log(`\n${matches} matches in ${(totalMs / 1000).toFixed(1)} s (${(totalMs / matches / 1000).toFixed(1)} s/match, jobs ${jobs})`)

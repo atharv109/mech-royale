@@ -1,0 +1,20 @@
+ROW {"seed":140,"score":0,"place":16,"deathT":24,"cause":{"by":12,"weapon":"gun"},"dmgTaken":{"gun":1440},"dmgTakenFront":225,"dmgTakenRear":1215,"dmgDealt":1620,"kills":0,"survived":false,"duration":414.8,"ms":9859,"aliveAtDeath":1,"hp":0,"winnerName":"expert"}
+ROW {"seed":141,"score":4,"place":12,"deathT":206.1,"cause":{"by":null,"weapon":"zone"},"dmgTaken":{"zone":1402},"dmgTakenFront":0,"dmgTakenRear":0,"dmgDealt":0,"kills":0,"survived":false,"duration":416.4,"ms":12049,"aliveAtDeath":1,"hp":0,"winnerName":"easy"}
+ROW {"seed":142,"score":0,"place":16,"deathT":136.2,"cause":{"by":null,"weapon":"zone"},"dmgTaken":{"zone":1400},"dmgTakenFront":0,"dmgTakenRear":0,"dmgDealt":0,"kills":0,"survived":false,"duration":321.6,"ms":10496,"aliveAtDeath":1,"hp":0,"winnerName":"hard"}
+ROW {"seed":143,"score":0,"place":16,"deathT":19.7,"cause":{"by":2,"weapon":"laser"},"dmgTaken":{"laser":1260,"gun":405},"dmgTakenFront":1665,"dmgTakenRear":0,"dmgDealt":1170,"kills":0,"survived":false,"duration":362.9,"ms":9169,"aliveAtDeath":1,"hp":0,"winnerName":"easy"}
+ROW {"seed":144,"score":2,"place":14,"deathT":147.9,"cause":{"by":null,"weapon":"zone"},"dmgTaken":{"zone":1402},"dmgTakenFront":0,"dmgTakenRear":0,"dmgDealt":630,"kills":0,"survived":false,"duration":272.6,"ms":11304,"aliveAtDeath":1,"hp":0,"winnerName":"expert"}
+ROW {"seed":145,"score":0,"place":16,"deathT":40.8,"cause":{"by":12,"weapon":"laser"},"dmgTaken":{"laser":1512,"gun":135},"dmgTakenFront":1647,"dmgTakenRear":0,"dmgDealt":2147,"kills":0,"survived":false,"duration":363.8,"ms":11135,"aliveAtDeath":1,"hp":0,"winnerName":"expert"}
+ROW {"seed":146,"score":0,"place":16,"deathT":14.6,"cause":{"by":3,"weapon":"gun"},"dmgTaken":{"gun":1418},"dmgTakenFront":1080,"dmgTakenRear":338,"dmgDealt":1395,"kills":0,"survived":false,"duration":413.1,"ms":8352,"aliveAtDeath":1,"hp":0,"winnerName":"medium"}
+ROW {"seed":147,"score":0,"place":16,"deathT":22.4,"cause":{"by":7,"weapon":"laser"},"dmgTaken":{"gun":1170,"laser":473},"dmgTakenFront":900,"dmgTakenRear":743,"dmgDealt":1170,"kills":0,"survived":false,"duration":323.5,"ms":8088,"aliveAtDeath":1,"hp":0,"winnerName":"expert"}
+ROW {"seed":148,"score":0,"place":16,"deathT":21.6,"cause":{"by":10,"weapon":"gun"},"dmgTaken":{"gun":1440},"dmgTakenFront":1440,"dmgTakenRear":0,"dmgDealt":1688,"kills":0,"survived":false,"duration":380.4,"ms":12382,"aliveAtDeath":1,"hp":0,"winnerName":"hard"}
+ROW {"seed":149,"score":6,"place":10,"deathT":140.8,"cause":{"by":4,"weapon":"gun"},"dmgTaken":{"gun":1438,"laser":1096},"dmgTakenFront":2534,"dmgTakenRear":0,"dmgDealt":9765,"kills":3,"survived":false,"duration":328.1,"ms":9951,"aliveAtDeath":1,"hp":0,"winnerName":"medium"}
+ROW {"seed":150,"score":15,"place":1,"deathT":null,"cause":null,"dmgTaken":{"gun":900},"dmgTakenFront":900,"dmgTakenRear":0,"dmgDealt":4676,"kills":2,"survived":true,"duration":268.8,"ms":10234,"aliveAtDeath":1,"hp":986,"winnerName":"mech-royale-v1"}
+ROW {"seed":151,"score":4,"place":12,"deathT":152,"cause":{"by":11,"weapon":"gun"},"dmgTaken":{"gun":1395,"lightning":660},"dmgTakenFront":1515,"dmgTakenRear":540,"dmgDealt":4257,"kills":2,"survived":false,"duration":403.9,"ms":10238,"aliveAtDeath":1,"hp":0,"winnerName":"easy"}
+
+== summary ==
+matches 12 | mean score 2.58 | survived 1/12 | median death 41s of 480s
+death causes: gun 5, zone 3, laser 3, survived 1
+damage taken by weapon: gun 9741, laser 4341, zone 4204, lightning 660
+front/rear total: 11906 / 2836 (rear 19%)
+
+12 matches in 33.1 s (2.8 s/match, jobs 8)
