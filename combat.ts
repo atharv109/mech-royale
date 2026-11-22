@@ -17,6 +17,8 @@ export interface CombatState {
   lastDamaged: { bearing: number; tObsTick: number; byId: number | null } | null
   /** internal: tick when the laser was first seen at full charge (hold_s auto-release) */
   laserFullTick?: number | null
+  /** kr/focus: sticky focus target id + last-seen time (obs.t) */
+  focusMemo?: { id: number; t: number } | null
 }
 
 export interface CombatDecision {
@@ -63,15 +65,19 @@ export function pickTarget(
 
   const mechs = obs.mechs.filter((m) => m.kind === "mech")
   if (mechs.length > 0) {
-    const byId = state.lastDamaged?.byId
-    if (byId != null) {
-      const attacker = mechs.find((m) => m.id === byId)
-      if (attacker) return { id: attacker.id, kind: "mech", pos: attacker.pos, hp: attacker.hp ?? 0 }
+    // kr/focus: sticky focus target - lowest current HP among visible mechs; no switching
+    // until it dies or stays unseen for 3 s (attacker memory no longer preempts focus)
+    const memo = state.focusMemo
+    let best: { pos: [number, number, number]; hp: number; id: number } | null =
+      memo ? (mechs.find((m) => m.id === memo.id) ?? null) : null
+    if (!best) {
+      best = mechs[0]
+      for (const m of mechs) if (better(best, m)) best = m
     }
-    let best = mechs[0]
-    for (const m of mechs) if (better(best, m)) best = m
+    state.focusMemo = { id: best.id, t: obs.t }
     return { id: best.id, kind: "mech", pos: best.pos, hp: best.hp ?? 0 }
   }
+  if (state.focusMemo && obs.t - state.focusMemo.t > 3) state.focusMemo = null
 
   const npcs = obs.mechs.filter((m) => m.kind === "npc")
   if (npcs.length > 0) {

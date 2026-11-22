@@ -55,8 +55,8 @@ const PREP_FRACTIONS = [0.6, 0.45, 0.3, 0.2]
 /** Preferred range band per fighting weapon (b. strafe radial term). */
 const RANGE_BANDS: Record<string, [number, number]> = {
   gun: [50, 90],
-  laser: [70, 160],
-  lightning: [20, 35],
+  laser: [80, 140], // kr/laser: fight at 80-140 m with laser + gun together
+  lightning: [25, 35], // kr/close: hold lightning range at 25-35 m
   mortar: [60, 150],
 }
 /** §10 priority order — first offer choice whose id CONTAINS the token wins. */
@@ -183,6 +183,8 @@ export class Brain {
   /** Task 10 counters (filled by variant brains; diagnostics by every brain) */
   readonly stats: BrainStats
   private pkIds = new Set<number>()
+  /** kr/laser: remembered pickups (kind + first-sight pos), by id */
+  private pkMem = new Map<number, { pos: Vec3; kind: string }>()
   /** ag/push: last position where each mech was seen or heard, by obs.t */
   private tracked = new Map<number, { pos: Vec3; t: number }>()
   private projIds = new Set<number>()
@@ -235,6 +237,7 @@ export class Brain {
         this.pkIds.add(p.id)
         this.stats.seen[p.kind] = (this.stats.seen[p.kind] ?? 0) + 1
         this.stats.seenDist[p.kind] = (this.stats.seenDist[p.kind] ?? 0) + Math.round(dist2d(p.pos, pos2))
+        this.pkMem.set(p.id, { pos: [...p.pos] as Vec3, kind: p.kind })
       }
     }
     for (const ev of obs.events) {
@@ -259,7 +262,7 @@ export class Brain {
     // fp/drones: in the first 75 s ignore mechs unless one is damaging us — hand decide() a
     // mech-filtered obs so its target/aim/fire go to drones and crates only.
     let pveObs = obs
-    if (obs.t < 75 && obs.tick - this.lastMechHitTick > 50) {
+    if (obs.t < 75 && !obs.mechs.some((m) => m.kind === "mech") && obs.tick - this.lastMechHitTick > 50) {
       pveObs = { ...obs, mechs: obs.mechs.filter((m) => m.kind !== "mech") } as Observation
     }
     const decision = this.decideFn(pveObs, this.combat, { los: this.los })
@@ -409,6 +412,23 @@ export class Brain {
         this.huntMemoId = hKey
         this.huntMemoT = obs.t
       }
+    }
+
+    // b1. kr/laser - go get a laser in the first 60 s: nearest remembered laser pickup within
+    // 200 m and inside the live circle, while we don't already hold one
+    if (goal === null && obs.t < 60 && !me.weapons.some((w) => w?.kind === "laser")) {
+      let lpPos: Vec3 | null = null
+      let lpD = Infinity
+      for (const p of this.pkMem.values()) {
+        if (p.kind !== "laser") continue
+        if (dist2d(p.pos, live.c) > live.r - 5) continue
+        const d = dist2d(p.pos, pos2)
+        if (d <= 200 && d < lpD) {
+          lpD = d
+          lpPos = p.pos
+        }
+      }
+      if (lpPos) goal = [lpPos[0], lpPos[1]]
     }
 
     // b. fight — decide() owns aim/fire; strafe the mech it targets (else the nearest) within 200 m.
