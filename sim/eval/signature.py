@@ -32,7 +32,7 @@ def report(paths):
         seen[k] = round(cnt / n, 1)
         sd[k] = round(sum((r.get("botSeenDist") or {}).get(k, 0) for r in rows) / cnt) if cnt else 0
     print(f"n={n} dodges={avg('botDodges'):.1f} retreats={avg('botRetreats'):.1f} "
-          f"cover%={100 * avg('sigCoverFrac'):.0f} maxAct={max(r.get('botMaxActMs', 0) for r in rows):.1f}ms")
+          f"cover%={100 * avg('sigCoverFrac'):.0f} maxAct={max(r.get('botMaxActMs', 0) for r in rows):.1f}ms slowTicks={sum(r.get('botSlowTicks', 0) for r in rows)}")
     print(f"   seen={seen} seenDist={sd} walkedTicks={avg('botWalked'):.0f} took={took} fail={fail}")
     print(f"   drones={avg('sigDrones'):.1f} crates={avg('sigCrates'):.1f} "
           f"cubes@90={avg('sigCubesAt90'):.1f} specials@90={avg('sigSpecialsAt90'):.1f} "

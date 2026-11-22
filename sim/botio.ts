@@ -108,9 +108,14 @@ export function coastOf(last: Record<string, unknown> | null): Record<string, un
 
 /** Drain stderr after stdin end and parse the last "BOTSIG {...}" line (bot-side counters). */
 export function botsigOf(b: SubBot): Record<string, unknown> | null {
+  const errTail = b.stderrText.split("\n").filter((l) => l && !l.startsWith("BOTSIG ")).slice(-12).join(" | ")
   for (const line of b.stderrText.split("\n")) {
     if (line.startsWith("BOTSIG ")) {
-      try { return JSON.parse(line.slice(7).trim()) as Record<string, unknown> } catch { return null }
+      try {
+        const o = JSON.parse(line.slice(7).trim()) as Record<string, unknown>
+        if (errTail) o._err = errTail
+        return o
+      } catch { return null }
     }
   }
   return null

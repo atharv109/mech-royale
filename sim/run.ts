@@ -197,11 +197,13 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
     botDodges: typeof bsig?.dodges === "number" ? bsig.dodges : 0,
     botRetreats: typeof bsig?.retreats === "number" ? bsig.retreats : 0,
     botMaxActMs: typeof bsig?.maxActMs === "number" ? Math.round(bsig.maxActMs * 100) / 100 : 0,
+    botSlowTicks: typeof bsig?.slowTicks === "number" ? bsig.slowTicks : 0,
     botSeen: bsig?.seen ?? {},
     botSeenDist: bsig?.seenDist ?? {},
     botFail: bsig?.fail ?? {},
     botTook: bsig?.took ?? {},
     botWalked: typeof bsig?.walked === "number" ? bsig.walked : 0,
+    botDiag: (bsig && typeof bsig === "object") ? (bsig as Record<string, unknown>) : null,
     botCoverTicks: typeof bsig?.coverTicks === "number" ? Math.round(bsig.coverTicks) : 0,
     winnerName: winner,
   }
