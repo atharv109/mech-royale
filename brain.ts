@@ -38,6 +38,8 @@ export type BrainDeps = {
   /** contract: new StuckMonitor(now) */
   stuck?: (now: number) => StuckLike
   decide?: DecideFn
+  /** shared counters (bot.ts owns the BOTSIG emission) */
+  stats?: BrainStats
 }
 
 const LOOT_WINDOW_S = 150
@@ -60,11 +62,11 @@ const RANGE_BANDS: Record<string, [number, number]> = {
 /** §10 priority order — first offer choice whose id CONTAINS the token wins. */
 // fp/drones: plating > armor > gun_rate > gun_damage > nanites > rest
 const UPGRADE_PRIORITY = [
-  "plating",
   "armor",
+  "plating",
+  "nanites",
   "gun_rate",
   "gun_damage",
-  "nanites",
   "laser_damage",
   "laser_charge",
   "lightning_efficiency",
@@ -139,6 +141,28 @@ function mulberry32(seed: number): () => number {
 
 const dist2d = (a: Vec3 | Vec2, b: Vec3 | Vec2) => Math.hypot(a[0] - b[0], a[1] - b[1])
 
+export type BrainStats = {
+  dodges: number
+  retreats: number
+  coverTicks: number
+  seen: Record<string, number>
+  seenDist: Record<string, number>
+  walked: number
+  took: Record<string, number>
+  fail: Record<string, number>
+}
+
+export const newBrainStats = (): BrainStats => ({
+  dodges: 0,
+  retreats: 0,
+  coverTicks: 0,
+  seen: {},
+  seenDist: {},
+  walked: 0,
+  took: {},
+  fail: {},
+})
+
 export class Brain {
   private readonly hello: Hello
   private readonly map: GameMap
@@ -153,6 +177,26 @@ export class Brain {
   private stuck: StuckLike | null = null
   private strafeSign: number
   private strafeFlipAt: number
+
+  /** Task 10 counters (filled by variant brains; diagnostics by every brain) */
+  readonly stats: BrainStats
+  private pkIds = new Set<number>()
+  /** sv/dodge: match time of the last sidestep episode (1 s refractory for counting) */
+  private lastDodgeT = -10
+  private lastSeenEnemyT = -10
+  private pkMem = new Map<number, { pos: Vec3; kind: string; t: number }>()
+  private rushT = -10
+  private rushGoalB: { pos: Vec3; kind: string } | null = null
+  private pkBlack: Map<number, number> = new Map()
+  private lootWatch: { id: number; t: number; d0: number } | null = null
+  /** sv/cover state: refusing bad fights */
+  private coverMode = false
+  private coverCell: Vec2 | null = null
+  private coverReseekT = -10
+  private dmgLog: { t: number; amt: number }[] = []
+  private lastAttacker: Vec3 | null = null
+  private lastAttackerT = -10
+  private coverEnterT = -10
   /** fp/drones: recent damage by a mech (ms-window via obs.tick) */
   private lastMechHitTick = -9999
   private burstUntil = -1
@@ -174,6 +218,7 @@ export class Brain {
       lastDamaged: null,
       disengaging: false,
     }
+    this.stats = deps?.stats ?? newBrainStats()
   }
 
   /** act() deadline context, passed by bot.ts: elapsed wall time and a force-replan switch */
@@ -188,6 +233,19 @@ export class Brain {
     const live = zoneCircle(obs.zone, obs.t)
     const walkSpeed = me.stats.walk_speed || 11.7
     const pickupRadius = this.hello.config.loot.pickup_radius || 4
+
+    // Task 10 diagnostics: pickups seen once by id (with first-sight distance), take results
+    for (const p of obs.pickups) {
+      if (!this.pkIds.has(p.id)) {
+        this.pkIds.add(p.id)
+        this.stats.seen[p.kind] = (this.stats.seen[p.kind] ?? 0) + 1
+        this.stats.seenDist[p.kind] = (this.stats.seenDist[p.kind] ?? 0) + Math.round(dist2d(p.pos, pos2))
+      }
+    }
+    for (const ev of obs.events) {
+      if (ev.type === "take_failed") this.stats.fail[ev.reason] = (this.stats.fail[ev.reason] ?? 0) + 1
+      else if (ev.type === "took") this.stats.took[ev.kind] = (this.stats.took[ev.kind] ?? 0) + 1
+    }
 
     let enemy: ActorObs | null = null
     let enemyDist = Infinity
@@ -232,6 +290,7 @@ export class Brain {
 
     // ----- movement goal: ladder, first match wins -----
     let goal: Vec2 | null = null
+    let farming = false
     let boost = false
     let silent = false
     let strafeOf: ActorObs | null = null
@@ -256,7 +315,10 @@ export class Brain {
         const d = dist2d(c.pos, pos2)
         if (d < cubeDist) { cube = c; cubeDist = d }
       }
-      if (cube) goal = [cube.pos[0], cube.pos[1]]
+      if (cube) {
+        goal = [cube.pos[0], cube.pos[1]]
+        farming = true
+      }
     }
 
     // a2. fp/cubes: a called drop is top priority — pre-position at its landing spot even
@@ -278,6 +340,130 @@ export class Brain {
           goal = [dr.pos[0], dr.pos[1]]
         }
       }
+    }
+
+    // sv/duelist: remember every laser/lightning pickup ever seen; go back for it later
+    const seenIds = new Set<number>()
+    for (const p of obs.pickups) {
+      seenIds.add(p.id)
+      if (p.kind === "laser" || p.kind === "lightning") {
+        if (!this.pkMem.has(p.id)) {
+          this.pkMem.set(p.id, { pos: [...p.pos] as Vec3, kind: p.kind, t: obs.t })
+        }
+      }
+    }
+    for (const [id, ent] of this.pkMem) {
+      // not visible now: drop the memory once we are close enough that we would certainly see it
+      // (someone looted it) — otherwise the rush walks to a ghost for the whole early game
+      if (!seenIds.has(id) && dist2d(ent.pos, pos2) < 20) {
+        this.pkMem.delete(id)
+      }
+    }
+
+
+    // sv/cover: damage in the last 3 s, the last attacker position, and enemies with LOS to us
+    this.dmgLog = this.dmgLog.filter((e) => obs.t - e.t <= 3)
+    for (const ev of obs.events) {
+      if (ev.type === "damaged" && ev.bearing !== null) {
+        if (ev.weapon !== "npc") this.dmgLog.push({ t: obs.t, amt: ev.amount })
+        if (ev.by != null) {
+          const src = obs.mechs.find((m) => m.id === ev.by)
+          this.lastAttacker = src
+            ? ([...src.pos] as Vec3)
+            : ([pos[0] + Math.cos(ev.bearing) * 30, pos[1] + Math.sin(ev.bearing) * 30, pos[2]] as Vec3)
+          this.lastAttackerT = obs.t
+        }
+      }
+    }
+    const dmg3s = this.dmgLog.reduce((sum, e) => sum + e.amt, 0)
+    const eye = [pos[0], pos[1], pos[2] + (this.hello.config.mech.eye_height ?? 8)] as Vec3
+    const watchers: Vec3[] = []
+    for (const m of obs.mechs) {
+      if (m.kind !== "mech") continue
+      if (this.los(eye, m.pos)) watchers.push([...m.pos] as Vec3)
+    }
+    if (watchers.length > 0) this.lastSeenEnemyT = obs.t
+
+
+    // a2. sv/duelist — arm up first while nobody is shooting at us: rush the nearest remembered
+    // laser/lightning (any distance — pickups leave vision, memory does not)
+    const holdsL = me.weapons.some((w) => w?.kind === "laser")
+    const holdsLg = me.weapons.some((w) => w?.kind === "lightning")
+    const quiet = dmg3s === 0 && obs.tick - (this.combat.lastDamaged?.tObsTick ?? -999) > 60
+    if (goal === null && obs.t < 120 && quiet && (!holdsL || !holdsLg)) {
+      const wantKind = !holdsL ? "laser" : "lightning"
+      let bp: { pos: Vec3; kind: string } | null = null
+      let bd = Infinity
+      for (const ent of this.pkMem.values()) {
+        if (me.weapons.some((w) => w?.kind === ent.kind)) continue
+        const d = dist2d(ent.pos, pos2)
+        if (d > 150) continue
+        if (ent.kind === wantKind ? d < bd : d + 40 < bd) {
+          bd = d
+          bp = ent
+        }
+      }
+      if (!bp) {
+        // fall back to a currently visible special pickup even beyond the 80 m loot cap
+        for (const p of obs.pickups) {
+          if (p.kind !== "laser" && p.kind !== "lightning") continue
+          const d = dist2d(p.pos, pos2)
+          if (d > 150 || (me.weapons.some((w) => w?.kind === p.kind) && this.pkMem.size === 0)) continue
+          if (this.pkMem.has(p.id) === false && me.weapons.some((w) => w?.kind === p.kind)) continue
+          if (d < bd) {
+            bd = d
+            bp = { pos: [...p.pos] as Vec3, kind: p.kind }
+          }
+        }
+      }
+      if (bp) {
+        if (this.rushT < 0 || this.rushGoalB !== bp) {
+          this.rushT = obs.t
+          this.rushGoalB = bp
+        } else if (obs.t - this.rushT > 12) {
+          // did not converge in 12 s: ghost or unreachable — forget it and go back to farming
+          for (const [id, ent] of this.pkMem) if (ent === bp) this.pkMem.delete(id)
+          this.rushT = -10
+          this.rushGoalB = null
+          bp = null
+        }
+        if (bp) {
+          goal = [bp.pos[0], bp.pos[1]]
+          if (dist2d(bp.pos, pos2) > 40 && me.energy > 30) boost = true
+          this.stats.walked++
+          ;(this.stats as Record<string, number>).rushFired = ((this.stats as Record<string, number>).rushFired ?? 0) + 1
+        }
+      } else {
+        bp = null
+      }
+    }
+    // a1. sv/cover — refuse bad fights: >=2 watchers, HP < 45%, or >300 dmg in 3 s puts us in a
+    // retreat state until HP >= 85%; movement goes to the nearest walkable cell with no LOS to
+    // any tracked enemy (zone safety still overrides — ladder a. already ran)
+    if (!this.coverMode) {
+      if (watchers.length >= 2 || me.hp < 0.45 * me.max_hp || dmg3s > 300) {
+        this.coverMode = true
+        this.stats.retreats++
+        this.coverEnterT = obs.t
+        this.coverCell = null
+        this.coverReseekT = -10
+      }
+    } else {
+      // st/both sticky retreat: finish it — out of LOS AND hp >= 85% — or a 12 s cap
+      if ((watchers.length === 0 && me.hp >= 0.85 * me.max_hp) || obs.t - this.coverEnterT > 12)
+        this.coverMode = false
+    }
+    if (this.coverMode) this.stats.coverTicks++
+    if (this.coverMode && goal === null) {
+      const badCell =
+        this.coverCell === null ||
+        !feasible(this.map, this.coverCell[0]!, this.coverCell[1]!) ||
+        dist2d(this.coverCell, live.c) > live.r - 2
+      if (badCell || obs.t - this.coverReseekT > 2) {
+        this.coverCell = this.findCoverCell(pos2, watchers, live)
+        this.coverReseekT = obs.t
+      }
+      goal = this.coverCell ?? ([live.c[0], live.c[1]] as Vec2)
     }
 
     // b. fight — decide() owns aim/fire; strafe the mech it targets (else the nearest) within 200 m.
@@ -316,7 +502,12 @@ export class Brain {
     // d. loot — walk to the best takeable weapon pickup within 80 m
     if (goal === null && strafeOf === null && obs.t < LOOT_WINDOW_S) {
       const want = this.preferredPickup(obs.pickups, me.weapons, pos2, PICKUP_MAX_DIST)
-      if (want && dist2d(want.pos, pos2) > pickupRadius) goal = [want.pos[0], want.pos[1]]
+      if (want && !this.stallGuard(want.id, dist2d(want.pos, pos2), obs) && dist2d(want.pos, pos2) > pickupRadius)
+        goal = [want.pos[0], want.pos[1]]
+      if (goal !== null) {
+        farming = true
+        this.stats.walked++
+      }
     }
 
     // d. crates/NPCs — loot window, no mech visible: approach decide's crate/NPC target within 60 m
@@ -327,8 +518,10 @@ export class Brain {
           : target.kind === "npc"
             ? obs.mechs.find((m) => m.id === target.id)?.pos
             : undefined
-      if (tpos && dist2d(tpos, pos2) <= PVE_APPROACH_DIST)
+      if (tpos && dist2d(tpos, pos2) <= PVE_APPROACH_DIST) {
+        farming = true
         goal = dist2d(tpos, pos2) > PVE_STANDOFF ? [tpos[0], tpos[1]] : pos2
+      }
     }
 
     // d+. cubes — nearest visible cube inside the live zone (never trade zone safety for it)
@@ -343,7 +536,10 @@ export class Brain {
           cubeDist = d
         }
       }
-      if (cube) goal = [cube.pos[0], cube.pos[1]]
+      if (cube) {
+        goal = [cube.pos[0], cube.pos[1]]
+        farming = true
+      }
     }
 
     // f. idle — walk silently to the next circle and scan
@@ -415,6 +611,23 @@ export class Brain {
       const l = Math.hypot(move[0], move[1])
       if (l > frac) move = [(move[0] / l) * frac, (move[1] / l) * frac]
     }
+    // sv/duelist: sneak at <= 4.6 m/s when enemies are known but nobody is shooting at us
+    if (!strafeOf && !farming && obs.t - this.lastSeenEnemyT < 10 && obs.t - this.lastAttackerT > 5 && this.dmgLog.length === 0) {
+      const frac = Math.min(1, 4.6 / walkSpeed)
+      const l = Math.hypot(move[0], move[1])
+      if (l > frac) move = [(move[0] / l) * frac, (move[1] / l) * frac]
+    }
+    // sv/dodge: sidestep perpendicular to any threat that is about to land on us; the dodge
+    // overrides movement for this tick, aim/fire decisions stay untouched
+    const dodge = this.dodgeDir(obs, pos)
+    if (dodge) {
+      move = dodge
+      if (obs.t - this.lastDodgeT > 1) {
+        this.lastDodgeT = obs.t
+        this.stats.dodges++
+      }
+    }
+
     a.move = move
     if (boost && me.energy > 0) a.boost = true
 
@@ -427,6 +640,10 @@ export class Brain {
         Math.abs(decision.aim[1] - me.aim[1]) > 1e-9)
     if (decideHasOpinion) a.aim = decision!.aim
     else a.aim = strafeOf ? this.aimAt(pos, strafeOf.pos) : this.scanAim(obs)
+
+    // sv/cover: while retreating, keep facing the last attacker
+    if (this.coverMode && this.lastAttacker && obs.t - this.lastAttackerT < 6)
+      a.aim = this.aimAt(pos, this.lastAttacker)
 
     // opportunistic takes in the loot window (independent of the movement branch)
     if (obs.t < LOOT_WINDOW_S) {
@@ -458,6 +675,101 @@ export class Brain {
     return [zone.next_center[0], zone.next_center[1]]
   }
 
+  /**
+   * sv/cover: nearest walkable cell around us that no tracked enemy has LOS to, inside the
+   * live circle. Ring search outward (6..36 m), hard 3 ms cap; null -> caller falls back to
+   * the zone center.
+   */
+  private findCoverCell(pos2: Vec2, enemies: Vec3[], live: { c: Vec2; r: number }): Vec2 | null {
+    const t0 = performance.now()
+    for (let ring = 6; ring <= 36; ring += 6) {
+      for (let k = 0; k < 12; k++) {
+        if (k % 3 === 0 && performance.now() - t0 > 3) return null
+        const ang = (k / 12) * Math.PI * 2
+        const x = pos2[0] + Math.cos(ang) * ring
+        const y = pos2[1] + Math.sin(ang) * ring
+        const cd: Vec3 = [x, y, 6]
+        if (dist2d(cd, live.c) > live.r - 5) continue
+        if (!feasible(this.map, x, y)) continue
+        let blocked = false
+        for (const e of enemies) {
+          const ez: Vec3 = [e[0], e[1], e[2] + (this.hello.config.mech.eye_height ?? 8)]
+          if (this.los(cd, ez)) {
+            blocked = true
+            break
+          }
+        }
+        if (!blocked) return [x, y]
+      }
+    }
+    return null
+  }
+
+  /**
+   * sv/dodge: unit sidestep direction when a threat is about to hit us, else null.
+   * Priority: mortar shell landing within 9 m (radial out) > visible projectile path within
+   * 3 m in the next 0.6 s (perpendicular) > a charging laser whose aim line passes within
+   * 4 m of us (perpendicular to the line).
+   */
+  private dodgeDir(obs: Observation, pos: Vec3): Vec2 | null {
+    const g = this.hello.config.weapons?.mortar?.gravity ?? 22
+    for (const p of obs.projectiles) {
+      if (p.kind === "mortar" && p.vel[2] > 0.5) {
+        const T = (2 * p.vel[2]) / g // shell returns to launch height
+        const lx = p.pos[0] + p.vel[0] * T
+        const ly = p.pos[1] + p.vel[1] * T
+        const d = Math.hypot(pos[0] - lx, pos[1] - ly)
+        if (d < 9) {
+          const l = Math.max(0.001, d)
+          return [(pos[0] - lx) / l, (pos[1] - ly) / l]
+        }
+      }
+    }
+    for (const p of obs.projectiles) {
+      const sp = Math.hypot(p.vel[0], p.vel[1])
+      if (sp < 1) continue
+      const t = Math.max(0, Math.min(0.6, ((pos[0] - p.pos[0]) * p.vel[0] + (pos[1] - p.pos[1]) * p.vel[1]) / (sp * sp)))
+      const cx = p.pos[0] + p.vel[0] * t
+      const cy = p.pos[1] + p.vel[1] * t
+      const d = Math.hypot(pos[0] - cx, pos[1] - cy)
+      if (d < 3) {
+        const side = Math.sign((pos[0] - cx) * (p.vel[1] / sp) - (pos[1] - cy) * (p.vel[0] / sp)) || 1
+        return [-(p.vel[1] / sp) * side, (p.vel[0] / sp) * side]
+      }
+    }
+    for (const m of obs.mechs) {
+      if (m.kind !== "mech" || !m.charging) continue
+      const dx = pos[0] - m.pos[0]
+      const dy = pos[1] - m.pos[1]
+      const d = Math.hypot(dx, dy)
+      if (d > 200 || d < 1) continue
+      const rx = Math.cos(m.aim[0])
+      const ry = Math.sin(m.aim[0])
+      const t = dx * rx + dy * ry
+      if (t <= 0) continue
+      if (Math.abs(dx * ry - dy * rx) < 4) {
+        const side = Math.sign(dx * ry - dy * rx) || 1
+        return [-ry * side, rx * side]
+      }
+    }
+    return null
+  }
+
+  /** sv/duelist: blacklist a pickup whose walk-to goal stalls 3 s without closing ~5 m. */
+  private stallGuard(id: number, d: number, obs: Observation): boolean {
+    if ((this.pkBlack.get(id) ?? 0) > obs.t) return true
+    const w = this.lootWatch
+    if (w === null || w.id !== id) {
+      this.lootWatch = { id, t: obs.t, d0: d }
+    } else if (obs.t - w.t > 3) {
+      if (d > w.d0 - 5) {
+        this.pkBlack.set(id, Date.now() + 20000)
+      }
+      this.lootWatch = null
+    }
+    return false
+  }
+
   /** Highest-ranked pickup within maxDist that passes takePlan; nearest wins a rank tie. */
   private preferredPickup(
     pickups: PickupObs[],
@@ -470,6 +782,7 @@ export class Brain {
     let bestD = Infinity
     for (const p of pickups) {
       const d = dist2d(p.pos, pos2)
+      if ((this.pkBlack.get(p.id) ?? 0) > Date.now()) continue
       if (d > maxDist || !takePlan(p.kind, weapons)) continue
       const r = SPECIAL_RANK[p.kind]!
       if (r > bestRank || (r === bestRank && d < bestD)) {
