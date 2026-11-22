@@ -1,4 +1,6 @@
-/** Mech Royale bot v1: wires the map, brain, and a last-resort fallback. Bot behavior lives in brain.ts. */
+/**
+ * var/noise: identical v1 behavior; new commit only to measure real-board score luck.
+ * Mech Royale bot v1: wires the map, brain, and a last-resort fallback. Bot behavior lives in brain.ts. */
 import { log, run, type BotAction, type Hello, type Observation } from "./mechfight.ts"
 import { loadMap, los, type GameMap } from "./map.ts"
 import { Brain } from "./brain.ts"
