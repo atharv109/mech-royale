@@ -13,7 +13,7 @@ type Track = { id: number; pos: number[]; vel: number[]; hp: number; maxHp: numb
 
 const WEAPON_PREF: Record<string, number> = { laser: 3.2, lightning: 2.5, mortar: 1, gun: 0 }
 const UPGRADE_PREF = [
-  "plating", "armor", "nanites", "lightning_efficiency", "laser_damage", "laser_charge", "gun_damage", "gun_rate",
+  "plating", "armor", "nanites", "gun_rate", "gun_damage", "lightning_efficiency", "laser_damage", "laser_charge",
   "lightning_range", "lightning_chain", "gyros", "servos", "gun_mag", "capacitor", "reactor", "jets", "gun_velocity",
   "sensors", "mortar_reload", "mortar_velocity", "mortar_splash", "laser_pierce",
 ]
@@ -360,7 +360,9 @@ class Brain {
       const theirHp = target.hp
       const theirFrac = theirHp / target.maxHp
       const finishing = theirFrac < 0.2 && hpFrac > 0.2 && threats <= 2
-      const losing = !finishing && ((hpFrac < 0.35 && theirFrac > hpFrac + 0.1) || (threats >= 2 && hpFrac < 0.55) || (threats >= 3 && hpFrac < 0.8))
+      // x/r1ver-ours: cover/retreat-when-losing removed — it cost us 0.75-1.10 points on the
+      // real board every time we tested cover/hide/retreat behavior; fight through
+      const losing = false as boolean
       if (losing) this.hideUntil = t + 6
       const prefer = lightS >= 0 ? 28 : laserS >= 0 ? 110 : 70
       if (losing && map) {
@@ -417,19 +419,7 @@ class Brain {
     let slow = false
     if (healing) {
       mode = "heal"
-      // creep (silently) into cover from the most recent threat
-      let last: Track | null = null
-      for (const tr of this.tracks.values()) if (!last || tr.t > last.t) last = tr
-      if (last && map) {
-        const exposed = map.los(last.pos[0], last.pos[1], last.pos[2] + 8, x, y, z + 6)
-        if (exposed) {
-          const cov = map.coverFrom(x, y, last.pos[0], last.pos[1], last.pos[2] + 8, 36)
-          if (cov) {
-            moveGoal = cov
-            slow = true
-          }
-        }
-      }
+      // x/r1ver-ours: heal-in-place instead of creeping into cover (cover behavior removed)
     }
     if (!moveGoal && !healing) {
       if (zoneGoal) {
@@ -469,7 +459,8 @@ class Brain {
           }
         }
         // NPC drones: walk into gun range of the nearest remembered one
-        if (hpFrac > 0.5) {
+        // x/r1ver-ours: farm through the whole match whenever no mech is visible (no HP gate)
+        if (true) {
           for (const nm of this.npcMem.values()) {
             const d = hyp2(x, y, nm.pos[0], nm.pos[1])
             if (d > 170) continue
@@ -481,7 +472,7 @@ class Brain {
           }
         }
         // crates on the ground: walk into range and break them
-        if (hpFrac > 0.45) {
+        if (true) {
           for (const c of o.crates) {
             if (Math.abs(c.pos[2] - this.mapGround(c.pos[0], c.pos[1])) > 2) continue
             const d = hyp2(x, y, c.pos[0], c.pos[1])
