@@ -125,16 +125,22 @@ class Brain {
 
     // ---------- upgrades
     if (o.offer) {
-      let bi = 0, bs = 1e9
-      o.offer.choices.forEach((c, i) => {
-        const r = UPGRADE_PREF.indexOf(c.id)
-        const s = r < 0 ? 50 : r
-        if (s < bs) {
-          bs = s
-          bi = i
-        }
-      })
-      act.pick = bi
+      // x/r1 mag: a bigger gun magazine before 3 cubes beats every other offer
+      const gm = me.cubes < 3 ? o.offer.choices.findIndex((c) => c.id === "gun_mag") : -1
+      if (gm >= 0) {
+        act.pick = gm
+      } else {
+        let bi = 0, bs = 1e9
+        o.offer.choices.forEach((c, i) => {
+          const r = UPGRADE_PREF.indexOf(c.id)
+          const s = r < 0 ? 50 : r
+          if (s < bs) {
+            bs = s
+            bi = i
+          }
+        })
+        act.pick = bi
+      }
     }
 
     // ---------- weapons held
