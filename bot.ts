@@ -43,21 +43,37 @@ run((hello) => {
     return { move: [Math.cos(yaw), Math.sin(yaw)], aim, fire: [enemy != null, false] }
   }
 
+  // Task 10: behavior counters emitted as "BOTSIG {...}" on stderr at exit (sim captures it)
+  const stats: Record<string, unknown> = brain
+    ? brain.stats
+    : { dodges: 0, retreats: 0, coverTicks: 0, seen: {}, seenDist: {}, walked: 0, took: {}, fail: {} }
+  let maxActMs = 0
+  process.on("exit", () => {
+    try {
+      console.error("BOTSIG " + JSON.stringify({ ...stats, maxActMs: Math.round(maxActMs * 100) / 100 }))
+    } catch {}
+  })
+
   return {
     name: "mech-royale-v1",
     act(obs: Observation): BotAction {
       // hard deadline: A* inside brain.act runs only while act is still under 10 ms of wall
       // time (cap dropped to 10 ms); past that the brain reuses its last path
       const t0 = performance.now()
+      const done = (r: BotAction): BotAction => {
+        const ms = performance.now() - t0
+        if (ms > maxActMs) maxActMs = ms
+        return r
+      }
       if (brain) {
         try {
-          return brain.act(obs, { elapsedMs: () => performance.now() - t0 })
+          return done(brain.act(obs, { elapsedMs: () => performance.now() - t0 }))
         } catch (e) {
           log(`brain.act failed at tick ${obs.tick}:`, e)
           brain = null // don't rethrow every tick: fall back permanently
         }
       }
-      return fallback(obs)
+      return done(fallback(obs))
     },
   }
 })
