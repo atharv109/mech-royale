@@ -44,6 +44,8 @@ class Brain {
   npcMem = new Map<number, { pos: number[]; vel: number[]; t: number; hp: number }>()
   cubeMem = new Map<number, { pos: number[]; t: number }>()
   pickMem = new Map<number, { pos: number[]; kind: string; t: number }>()
+  /** x/r1 killcubes: where the last observed kill dropped its cubes */
+  killLoot: { pos: number[]; t: number } | null = null
 
   constructor(hello: Hello) {
     this.cfg = hello.config
@@ -112,7 +114,12 @@ class Brain {
         this.threatBearing = e.bearing
         this.threatT = t
       }
-      if (e.type === "kill") this.tracks.delete(e.target)
+      if (e.type === "kill") {
+        // x/r1 killcubes: remember where the victim died so its dropped cubes get collected
+        const tr = this.tracks.get(e.target)
+        if (tr) this.killLoot = { pos: [tr.pos[0], tr.pos[1]], t }
+        this.tracks.delete(e.target)
+      }
     }
     for (const s of o.sounds) {
       if (["gun", "laser", "laser_charge", "lightning", "mortar", "boost", "step", "jet"].includes(s.kind) && s.dist !== "far") {
@@ -125,16 +132,22 @@ class Brain {
 
     // ---------- upgrades
     if (o.offer) {
-      let bi = 0, bs = 1e9
-      o.offer.choices.forEach((c, i) => {
-        const r = UPGRADE_PREF.indexOf(c.id)
-        const s = r < 0 ? 50 : r
-        if (s < bs) {
-          bs = s
-          bi = i
-        }
-      })
-      act.pick = bi
+      // x/r1 mag: a bigger gun magazine before 3 cubes beats every other offer
+      const gm = me.cubes < 3 ? o.offer.choices.findIndex((c) => c.id === "gun_mag") : -1
+      if (gm >= 0) {
+        act.pick = gm
+      } else {
+        let bi = 0, bs = 1e9
+        o.offer.choices.forEach((c, i) => {
+          const r = UPGRADE_PREF.indexOf(c.id)
+          const s = r < 0 ? 50 : r
+          if (s < bs) {
+            bs = s
+            bi = i
+          }
+        })
+        act.pick = bi
+      }
     }
 
     // ---------- weapons held
@@ -429,6 +442,18 @@ class Brain {
       } else if (mode !== "fight") {
         // loot: pickups worth taking, then crates/cubes, then NPCs
         let best: [number, number] | null = null, bs = 1e9
+        // x/r1 killcubes: a recent kill dropped its cubes - walk onto the kill spot before
+        // anything else; the enclosing branch only runs with no zone goal, so the zone can
+        // never force us out of position for it
+        if (this.killLoot && t - this.killLoot.t < 10) {
+          const kl = this.killLoot
+          const d = hyp2(x, y, kl.pos[0], kl.pos[1])
+          const zr = hyp2(kl.pos[0], kl.pos[1], zn.next_center[0], zn.next_center[1])
+          if (d < 200 && zr <= zn.next_radius * 0.95) {
+            best = [kl.pos[0], kl.pos[1]]
+            bs = -1e6
+          }
+        }
         for (const p of this.pickMem.values()) {
           if (wantKind(p.kind) === null) continue
           const d = hyp2(x, y, p.pos[0], p.pos[1])
@@ -459,11 +484,12 @@ class Brain {
           }
         }
         // NPC drones: walk into gun range of the nearest remembered one
-        // x/r1ver-ours: farm through the whole match whenever no mech is visible (no HP gate)
-        if (true) {
+        // x/r1 farm: no mech visible, up to 200 m, inside the next circle
+        if (visible.length === 0) {
           for (const nm of this.npcMem.values()) {
             const d = hyp2(x, y, nm.pos[0], nm.pos[1])
-            if (d > 170) continue
+            if (d > 200) continue
+            if (hyp2(nm.pos[0], nm.pos[1], zn.next_center[0], zn.next_center[1]) > zn.next_radius) continue
             const sc = d - 20
             if (sc < bs) {
               bs = sc
@@ -471,12 +497,13 @@ class Brain {
             }
           }
         }
-        // crates on the ground: walk into range and break them
-        if (true) {
+        // crates: walk into range and break them
+        // x/r1 farm: rooftop crates too (reachable with jets), no mech visible, inside next circle
+        if (visible.length === 0) {
           for (const c of o.crates) {
-            if (Math.abs(c.pos[2] - this.mapGround(c.pos[0], c.pos[1])) > 2) continue
             const d = hyp2(x, y, c.pos[0], c.pos[1])
             if (d > 150) continue
+            if (hyp2(c.pos[0], c.pos[1], zn.next_center[0], zn.next_center[1]) > zn.next_radius) continue
             const sc = d + 5
             if (sc < bs) {
               bs = sc
