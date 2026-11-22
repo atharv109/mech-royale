@@ -90,6 +90,7 @@ export async function runMatch(
       if (!m.alive) continue
       const obs = eng.buildObs(m)
       let action: Record<string, unknown> | null = null
+      if (id === 0 && obs.mechs.some((mm) => mm.kind === "mech")) eng.visTicks++
       const bot = bots[id]!
       if (id === 0 && sub) {
         const got = await decide(sub, obs, budget)
@@ -207,6 +208,9 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
     botDiag: (bsig && typeof bsig === "object") ? (bsig as Record<string, unknown>) : null,
     botCoverTicks: typeof bsig?.coverTicks === "number" ? Math.round(bsig.coverTicks) : 0,
     botHunts: typeof bsig?.hunts === "number" ? bsig.hunts : 0,
+    sigShots: (res as unknown as { shotsByFocus?: number }).shotsByFocus ?? 0,
+    sigHits: (res as unknown as { hitsByFocus?: number }).hitsByFocus ?? 0,
+    sigVisTicks: (res as unknown as { visTicks?: number }).visTicks ?? 0,
     winnerName: winner,
   }
 }

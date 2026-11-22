@@ -17,6 +17,9 @@ export interface CombatState {
   lastDamaged: { bearing: number; tObsTick: number; byId: number | null } | null
   /** internal: tick when the laser was first seen at full charge (hold_s auto-release) */
   laserFullTick?: number | null
+  /** cb/trigger: obs.tick until which the gun/lightning trigger must stay held */
+  gunHot?: number | null
+  lightHot?: number | null
 }
 
 export interface CombatDecision {
@@ -234,6 +237,17 @@ export function decide(obs: Observation, state: CombatState, deps: { los: (a: Ve
       const origin = shotOrigin(muzzle, self.aim, deps.los)
       gunFire = deps.los(muzzle, aimPoint) && deps.los(origin, aimPoint)
     }
+    // cb/trigger: a decision covers ~0.1 s but a gun cycle is ~0.24 s -- when the cycle will
+    // complete within the window the trigger must already be held, so a committed trigger
+    // survives narrow aim flicker (1.5x gate) until the cycle ends instead of restarting it
+    const cd = gun.cooldown ?? 0
+    if (gunFire) state.gunHot = obs.tick + Math.max(1, Math.ceil(cd * TICKS_PER_S))
+    else if (state.gunHot != null && obs.tick < state.gunHot) {
+      const yawSlop = Math.abs(normAngle(self.aim[0] - sol.yaw))
+      const pitchSlop = Math.abs(self.aim[1] - sol.pitch)
+      if (yawSlop <= 1.5 * Math.atan(radius / horiz) && pitchSlop <= 1.5 * Math.atan(centerHeight / horiz)) gunFire = true
+      else state.gunHot = null
+    } else state.gunHot = null
   }
 
   // special (slot 1): laser / lightning / mortar
@@ -259,6 +273,14 @@ export function decide(obs: Observation, state: CombatState, deps: { los: (a: Ve
     const yawOff = Math.abs(normAngle(self.aim[0] - directYaw))
     // los last: don't burn energy arcing into a wall at a remembered target
     specialFire = horiz <= 0.95 * range && yawOff <= halfCone && self.energy > 15 && deps.los(muzzle, center)
+    // cb/trigger: same held-trigger rule for the arc -- hold it through narrow cone flicker
+    // until the current cooldown cycle ends
+    const lcd = special.cooldown ?? 0
+    if (specialFire) state.lightHot = obs.tick + Math.max(1, Math.ceil(lcd * TICKS_PER_S))
+    else if (state.lightHot != null && obs.tick < state.lightHot) {
+      if (horiz <= range && yawOff <= 1.5 * halfCone && self.energy > 15) specialFire = true
+      else state.lightHot = null
+    } else state.lightHot = null
   } else if (special?.kind === "mortar" && lob) {
     // shells leave along the ACTUAL torso aim: wait until it has slewed onto the lob
     const pitchErr = Math.abs(self.aim[1] - lob[1])
