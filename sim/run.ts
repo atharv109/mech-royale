@@ -111,9 +111,11 @@ export async function runMatch(
   }
   // end for subprocess
   const res = eng.result(0)
+  let bsig: Record<string, unknown> | null = null
   if (sub) {
     const f = res.placements.find((p) => p.id === 0)
-    await endBot(sub, f?.place ?? 16, f?.kills ?? 0)
+    bsig = await endBot(sub, f?.place ?? 16, f?.kills ?? 0)
+    ;(res as unknown as { botSig?: unknown }).botSig = bsig
   }
   if (opts.replayPath) writeFileSync(opts.replayPath, JSON.stringify(replayFile(eng)), null)
   void t0
@@ -161,6 +163,7 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
   const botName = testBot.cmd ? testBot.cmd.join(" ") : "in-process"
   const ms0 = performance.now()
   const res = await runMatch(map, seed, testBot, { quiet, replayPath: matchesDone < replays ? join(dir, `m-${seed}.json`) : undefined })
+  const bsig = (res as unknown as { botSig?: Record<string, unknown> | null }).botSig ?? null
   const ms = Math.round(performance.now() - ms0)
   const f = res.focus
   if (!f) throw new Error("no focus")
@@ -183,6 +186,23 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
     ms,
     aliveAtDeath: (f as unknown as { aliveAtDeath?: number }).aliveAtDeath ?? 1,
     hp: (f as unknown as { hp?: number }).hp ?? 0,
+    sigCubesAt90: (f as unknown as { sigCubesAt90?: number }).sigCubesAt90 ?? 0,
+    sigSpecialsAt90: (f as unknown as { sigSpecialsAt90?: number }).sigSpecialsAt90 ?? 0,
+    sigCrates: (res as unknown as { sigCrates?: number }).sigCrates ?? 0,
+    sigDrones: (res as unknown as { sigDrones?: number }).sigDrones ?? 0,
+    sigDrops: (res as unknown as { sigDrops?: number }).sigDrops ?? 0,
+    sigCubesCollected: (res as unknown as { sigCubesCollected?: number }).sigCubesCollected ?? 0,
+    sigDodges: (f as unknown as Record<string, number>).sigDodges,
+    sigCoverFrac: (res as unknown as Record<string, number>).sigCoverFrac,
+    botDodges: typeof bsig?.dodges === "number" ? bsig.dodges : 0,
+    botRetreats: typeof bsig?.retreats === "number" ? bsig.retreats : 0,
+    botMaxActMs: typeof bsig?.maxActMs === "number" ? Math.round(bsig.maxActMs * 100) / 100 : 0,
+    botSeen: bsig?.seen ?? {},
+    botSeenDist: bsig?.seenDist ?? {},
+    botFail: bsig?.fail ?? {},
+    botTook: bsig?.took ?? {},
+    botWalked: typeof bsig?.walked === "number" ? bsig.walked : 0,
+    botCoverTicks: typeof bsig?.coverTicks === "number" ? Math.round(bsig.coverTicks) : 0,
     winnerName: winner,
   }
 }
