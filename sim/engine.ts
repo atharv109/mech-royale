@@ -172,6 +172,10 @@ export class Engine {
   replayEvery = 5
   names: string[] = []
   shotsByHouse = 0
+  sigCrates = 0
+  sigDrones = 0
+  sigDrops = 0
+  shotsByFocus = 0
   projHits = 0
   hitVictims: Record<number, number> = {}
   visRows: Record<number, number> = {}
@@ -540,7 +544,8 @@ export class Engine {
     const pitch = m.aim[1] + gauss(this.rng) * s
     const cp = Math.cos(pitch)
     const v: Vec3 = [cp * Math.cos(yaw) * st.speed!, cp * Math.sin(yaw) * st.speed!, Math.sin(pitch) * st.speed!]
-    if (m.id !== 0) this.shotsByHouse++
+    if (m.id === 0) this.shotsByFocus++
+    else this.shotsByHouse++
     this.projs.push({ id: this.nextId++, kind, ownerId: m.id, pos: o, vel: v, bornT: this.t, maxT: this.t + (st.range ?? 230) / st.speed! })
     this.sounds.push({ srcId: m.id, kind, x: o[0], y: o[1], t: this.t })
   }
@@ -667,6 +672,8 @@ export class Engine {
   }
 
   private hurtCrate(c: Crate, amount: number, byId: number, weapon: string, srcPos: Vec3, src: Mech | null) {
+    const wasAlive = c.hp > 0
+    if (wasAlive && c.hp - amount <= 0 && byId === 0) (this as unknown as { sigCrates: number }).sigCrates++
     c.hp -= amount
     if (src) {
       src.dmgDealt += amount
@@ -719,6 +726,7 @@ export class Engine {
     victim.lastHitBy = { id: info.byId, weapon: isZone ? "zone" : info.weapon }
     if (victim.hp <= 0 && victim.alive) {
       victim.alive = false
+      if (victim.isNpc && info.byId === 0) (this as unknown as { sigDrones: number }).sigDrones++
       ;(victim as unknown as { aliveAtDeath: number }).aliveAtDeath = this.mechs.filter((z) => z.alive).length + 1
       victim.deathT = this.t
       victim.deathCause = { by: info.byId, weapon: info.weapon }
@@ -1035,6 +1043,7 @@ export class Engine {
           if (d.progress >= d.captureS) {
             d.progress = -1
             d.holder = null
+            if (sole.id === 0) (this as unknown as { sigDrops: number }).sigDrops++
             sole.hp = sole.maxHp
             sole.energy = sole.maxEnergy
             this.grantCubes(sole, this.cfg.drops.cubes)
@@ -1152,6 +1161,10 @@ export class Engine {
     return {
       seed: 0,
       shotsByHouse: this.shotsByHouse,
+      shotsByFocus: this.shotsByFocus,
+      sigCrates: this.sigCrates,
+      sigDrones: this.sigDrones,
+      sigDrops: this.sigDrops,
       projHits: this.projHits,
       projWalls: this.projWalls,
       hitVictims: this.hitVictims,
@@ -1169,6 +1182,8 @@ export class Engine {
             aliveAtDeath: (f as unknown as { aliveAtDeath?: number }).aliveAtDeath ?? 1,
             hp: Math.round(f.hp),
             survived: f.alive,
+            sigCubesAt90: (f as unknown as { sigCubesAt90?: number }).sigCubesAt90 ?? 0,
+            sigSpecialsAt90: (f as unknown as { sigSpecialsAt90?: number }).sigSpecialsAt90 ?? 0,
           }
         : null,
       replay: this.replay,

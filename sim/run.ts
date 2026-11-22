@@ -183,6 +183,11 @@ async function runOne(map: GameMap, seed: number, testBot: BotHandle, matchesDon
     ms,
     aliveAtDeath: (f as unknown as { aliveAtDeath?: number }).aliveAtDeath ?? 1,
     hp: (f as unknown as { hp?: number }).hp ?? 0,
+    sigCubesAt90: (f as unknown as { sigCubesAt90?: number }).sigCubesAt90 ?? 0,
+    sigSpecialsAt90: (f as unknown as { sigSpecialsAt90?: number }).sigSpecialsAt90 ?? 0,
+    sigCrates: (res as unknown as { sigCrates?: number }).sigCrates ?? 0,
+    sigDrones: (res as unknown as { sigDrones?: number }).sigDrones ?? 0,
+    sigDrops: (res as unknown as { sigDrops?: number }).sigDrops ?? 0,
     winnerName: winner,
   }
 }
